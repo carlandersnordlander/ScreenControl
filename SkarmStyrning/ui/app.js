@@ -463,6 +463,7 @@ function renderComputers() {
   const n = state.net;
   let html = '';
   if (n?.error) html += `<div class="notice" style="grid-column:1/-1">${ICON.warn}<div>${esc(n.error)}</div></div>`;
+  if (n?.firewallBlocked) html += firewallNotice();
   if (!cs.length) {
     html += `<div class="empty">Inga datorer ännu. Starta <b>Skärmstyrning klient</b> på t.ex. jobbdatorn och tryck <b>Lägg till dator</b> här.</div>`;
     box.innerHTML = html;
@@ -513,10 +514,25 @@ $('#computers').addEventListener('click', e => {
 
 $('#btnAddComputer').onclick = openPairing;
 
+function firewallNotice() {
+  const pub = state.net?.publicNetwork;
+  return `<div class="notice fw-notice" style="grid-column:1/-1">${ICON.warn}
+    <div><b>Windows brandvägg släpper inte in andra datorer.</b>
+      ${pub ? 'Ditt nätverk är markerat som <i>offentligt</i>, så ' : ''}klienten kan varken hitta eller nå den här datorn.
+      Regeln gäller bara Skärmstyrning och portarna 47811/47812 – anslutningar kräver ändå parkoppling och är krypterade.
+      <div style="margin-top:10px"><button class="btn primary small" data-act="firewall">Tillåt i brandväggen</button></div>
+    </div></div>`;
+}
+
+document.addEventListener('click', e => {
+  if (e.target.closest('[data-act="firewall"]')) call('allowFirewall').catch(() => {});
+});
+
 function openPairing() {
   call('startPairing').catch(() => {});
   modal(`
     <h3>Lägg till dator</h3>
+    <div id="pairFw" style="margin-bottom:12px"></div>
     <p>Gör så här på den andra datorn (t.ex. jobbdatorn):</p>
     <ol class="steps">
       <li>Starta <b>Skärmstyrning klient</b> (se README för hur du bygger den).</li>
@@ -541,6 +557,8 @@ function updatePairing() {
   const root = $('#modalRoot').firstElementChild;
   if (!root || root.dataset.kind !== 'pairing') return;
   const n = state.net || {};
+  const fw = $('#pairFw', root);
+  if (fw) fw.innerHTML = n.firewallBlocked ? firewallNotice() : '';
   $('#pairCode', root).textContent = n.pairCode ? n.pairCode.replace(/(\d{3})(\d{3})/, '$1 $2') : '––– –––';
   $('#pairCode', root).classList.toggle('expired', !n.pairCode);
   $('#pairTimer', root).textContent = n.pairCode ? `Giltig i ${Math.floor(n.pairSecondsLeft / 60)}:${String(n.pairSecondsLeft % 60).padStart(2, '0')}` : 'Koden har gått ut – tryck Ny kod.';

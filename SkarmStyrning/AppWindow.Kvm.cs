@@ -175,9 +175,80 @@ public sealed partial class AppWindow
         }).ToList();
     }
 
+    // ---------------- Brandvägg ----------------
+
+    (bool allowed, bool publicNet, DateTime at) firewall = (true, false, DateTime.MinValue);
+
+    /// <summary>Släpper Windows brandvägg in anslutningar till appen på det nätverk som används nu?</summary>
+    (bool allowed, bool publicNet) FirewallState()
+    {
+        if (DateTime.Now - firewall.at < TimeSpan.FromSeconds(15)) return (firewall.allowed, firewall.publicNet);
+        bool allowed = false, blocked = false, publicNet = false;
+        try
+        {
+            dynamic policy = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FwPolicy2")!)!;
+            int current = policy.CurrentProfileTypes;
+            publicNet = (current & 4) != 0;
+            bool firewallOn = true;
+            try
+            {
+                firewallOn = false;
+                foreach (int p in new[] { 1, 2, 4 })
+                    if ((current & p) != 0 && (bool)policy.FirewallEnabled[p]) firewallOn = true;
+            }
+            catch { firewallOn = true; }
+            if (!firewallOn) allowed = true;
+            string exe = Environment.ProcessPath ?? "";
+            foreach (dynamic r in policy.Rules)
+            {
+                try
+                {
+                    if (!(bool)r.Enabled || (int)r.Direction != 1 || ((int)r.Profiles & current) == 0) continue;
+                    string? app = r.ApplicationName;
+                    bool forApp = app != null && string.Equals(Path.GetFullPath(Environment.ExpandEnvironmentVariables(app)), exe, StringComparison.OrdinalIgnoreCase);
+                    if (!forApp) continue;
+                    if ((int)r.Action == 0) blocked = true; else allowed = true;
+                }
+                catch { }
+            }
+        }
+        catch { allowed = true; } // kan inte läsa brandväggen – varna inte i onödan
+        firewall = (allowed && !blocked, publicNet, DateTime.Now);
+        return (firewall.allowed, firewall.publicNet);
+    }
+
+    /// <summary>Lägger till brandväggsregler för appen. Windows frågar användaren (UAC) först.</summary>
+    async Task AllowInFirewall()
+    {
+        string exe = (Environment.ProcessPath ?? "").Replace("'", "''");
+        string script =
+            "Remove-NetFirewallRule -DisplayName 'Skarmstyrning TCP 47811','Skarmstyrning UDP 47812' -ErrorAction SilentlyContinue; " +
+            "Get-NetFirewallApplicationFilter -Program '" + exe + "' -ErrorAction SilentlyContinue | Get-NetFirewallRule | Where-Object Action -eq 'Block' | Remove-NetFirewallRule; " +
+            "New-NetFirewallRule -DisplayName 'Skarmstyrning TCP 47811' -Direction Inbound -Action Allow -Protocol TCP -LocalPort " + Net.Proto.Port + " -Program '" + exe + "' -Profile Any | Out-Null; " +
+            "New-NetFirewallRule -DisplayName 'Skarmstyrning UDP 47812' -Direction Inbound -Action Allow -Protocol UDP -LocalPort " + Net.Proto.DiscoveryPort + " -Program '" + exe + "' -Profile Any | Out-Null";
+        var psi = new System.Diagnostics.ProcessStartInfo("powershell.exe",
+            "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand " + Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script)))
+        { UseShellExecute = true, Verb = "runas", WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden };
+        try
+        {
+            using var p = System.Diagnostics.Process.Start(psi);
+            if (p != null) await p.WaitForExitAsync();
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            Toast("Brandväggen ändrades inte (frågan avbröts).", "info");
+            return;
+        }
+        firewall.at = DateTime.MinValue;
+        Toast(FirewallState().allowed ? "Brandväggen släpper nu in andra datorer till Skärmstyrning." : "Det gick inte att ändra brandväggen.",
+              FirewallState().allowed ? "success" : "error");
+        await PushState();
+    }
+
     object? NetState()
     {
         if (net == null) return null;
+        var (fwAllowed, publicNet) = FirewallState();
         int left = net.PairCode != null ? Math.Max(0, (int)(net.PairUntil - DateTime.Now).TotalSeconds) : 0;
         return new
         {
@@ -187,6 +258,8 @@ public sealed partial class AppWindow
             addresses = NetServer.LocalAddresses(),
             pairCode = left > 0 ? net.PairCode : null,
             pairSecondsLeft = left,
+            firewallBlocked = !fwAllowed,
+            publicNetwork = publicNet,
         };
     }
 
@@ -242,6 +315,10 @@ public sealed partial class AppWindow
                 await PushState();
                 return (true, null);
             }
+
+            case "allowFirewall":
+                await AllowInFirewall();
+                return (true, null);
 
             case "setShareInput":
                 Settings.ShareInput = a?["value"]?.GetValue<bool>() ?? true;
