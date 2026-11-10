@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Skärmstyrning</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="progress" id="progress"><span></span></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32"><rect x="10" y="6" width="16" height="10.5" rx="2" fill="currentColor" opacity=".55"/><rect x="5.5" y="10.5" width="17" height="11" rx="2" fill="currentColor"/><rect x="12.5" y="21.5" width="3" height="3" fill="currentColor"/><rect x="9" y="24" width="10" height="2" rx="1" fill="currentColor"/></svg>
+      </div>
+      <div class="brand-text">
+        <h1>Skärmstyrning</h1>
+        <p id="subtitle">Läser in skärmar …</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <div class="pill remote-pill" id="remotePill" hidden><span class="dot"></span><span id="remoteText"></span></div>
+      <button class="pill" id="autoPill" title="Automatisk anpassning"><span class="dot"></span><span id="autoText">Auto</span></button>
+      <button class="icon-btn" id="btnRefresh" title="Uppdatera"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg></button>
+      <button class="icon-btn" id="btnSettings" title="Inställningar"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="col-main">
+      <article class="card stage-card">
+        <div class="card-head">
+          <div>
+            <h2>Skärmlayout</h2>
+            <p class="muted">Dra skärmarna för att placera dem. Klicka på en skärm för att styra den.</p>
+          </div>
+          <div class="head-actions">
+            <button class="btn ghost" id="btnIdentify"><svg viewBox="0 0 24 24"><path d="M4 7V5a1 1 0 0 1 1-1h2M17 4h2a1 1 0 0 1 1 1v2M20 17v2a1 1 0 0 1-1 1h-2M7 20H5a1 1 0 0 1-1-1v-2"/><path d="M11 9h1.5v6"/></svg>Identifiera</button>
+            <button class="btn ghost" id="btnLearn"><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></svg>Hämta från Windows</button>
+          </div>
+        </div>
+        <div class="stage" id="stage"></div>
+        <div class="dirty-bar" id="dirtyBar">
+          <div class="dirty-text"><span class="dirty-dot"></span>Osparad placering</div>
+          <div class="dirty-actions">
+            <button class="btn ghost" id="btnUndo">Ångra</button>
+            <button class="btn" id="btnSave">Spara</button>
+            <button class="btn primary" id="btnSaveApply">Spara och verkställ</button>
+          </div>
+        </div>
+      </article>
+
+      <div class="modes" id="modes">
+        <button class="mode-tile" data-mode="extend">
+          <div class="mode-art">
+            <svg viewBox="0 0 120 56"><rect class="m on" x="6" y="12" width="34" height="22" rx="3"/><rect class="m on b" x="43" y="12" width="34" height="22" rx="3"/><rect class="m on c" x="80" y="12" width="34" height="22" rx="3"/><path class="stand" d="M21 36h4M58 36h4M95 36h4M17 40h12M54 40h12M91 40h12"/></svg>
+          </div>
+          <div class="mode-text"><strong>Utöka alla</strong><span>Bara skärmar som visar den här datorn, på sina platser</span></div>
+          <span class="mode-check"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></span>
+        </button>
+        <button class="mode-tile" data-mode="clone">
+          <div class="mode-art">
+            <svg viewBox="0 0 120 56"><rect class="m on" x="14" y="12" width="40" height="24" rx="3"/><rect class="m on" x="66" y="12" width="40" height="24" rx="3"/><circle class="sym" cx="34" cy="24" r="5"/><circle class="sym" cx="86" cy="24" r="5"/><path class="stand" d="M32 38h4M84 38h4M28 42h12M80 42h12"/></svg>
+          </div>
+          <div class="mode-text"><strong>Duplicera alla</strong><span>Samma bild på alla skärmar</span></div>
+          <span class="mode-check"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></span>
+        </button>
+        <button class="mode-tile" data-mode="only">
+          <div class="mode-art">
+            <svg viewBox="0 0 120 56"><rect class="m off" x="6" y="14" width="30" height="19" rx="3"/><rect class="m on" x="42" y="9" width="36" height="25" rx="3"/><rect class="m off" x="84" y="14" width="30" height="19" rx="3"/><path class="stand" d="M58 36h4M54 40h12"/></svg>
+          </div>
+          <div class="mode-text"><strong>Endast vald skärm</strong><span id="onlyDesc">Välj en skärm ovan</span></div>
+          <span class="mode-check"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></span>
+        </button>
+      </div>
+
+      <article class="card">
+        <div class="card-head">
+          <div>
+            <h2>Datorer</h2>
+            <p class="muted">Andra datorer på samma skärmar. Dra pekaren över kanten så följer mus och tangentbord med.</p>
+          </div>
+          <button class="btn" id="btnAddComputer"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Lägg till dator</button>
+        </div>
+        <div class="computers" id="computers"></div>
+      </article>
+
+      <article class="card">
+        <div class="card-head">
+          <div>
+            <h2>Profiler</h2>
+            <p class="muted">Spara hur skärmarna sitter och vilken ingång de visar – byt med ett klick.</p>
+          </div>
+          <button class="btn" id="btnNewProfile"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Ny profil</button>
+        </div>
+        <div class="profiles" id="profiles"></div>
+      </article>
+    </section>
+
+    <aside class="card inspector" id="inspector"></aside>
+  </main>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <div id="modalRoot"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

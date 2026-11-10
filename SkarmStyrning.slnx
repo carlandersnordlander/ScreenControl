@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="SkarmStyrning.Client/SkarmStyrning.Client.csproj" />
+  <Project Path="SkarmStyrning/SkarmStyrning.csproj" />
+</Solution>
