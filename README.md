@@ -10,6 +10,18 @@ SkarmStyrning.Client/   Klienten som körs på den andra datorn (t.ex. jobbdator
 Shared/Net/             Gemensam kod: krypterat protokoll och skärmläsning.
 ```
 
+## Ladda ner färdig version
+
+Under [Releases](../../releases) finns färdigbyggda versioner som inte kräver .NET:
+
+- **SkarmStyrningKlient.exe** – klienten för den andra datorn (t.ex. jobbdatorn). En enda fil, kör den direkt.
+- **Skarmstyrning.zip** – huvudappen. Packa upp och kör `SkarmStyrning.exe`.
+
+Filerna är inte signerade, så Windows SmartScreen kan varna: välj *Mer information → Kör ändå*.
+
+Versionerna byggs av GitHub Actions (`.github/workflows/release.yml`) när en tagg som `v1.0.0` pushas.
+Arbetsflödet kan också köras manuellt under *Actions*; då hamnar filerna som en artefakt på körningen.
+
 ## Krav
 
 - Windows 10/11
@@ -33,7 +45,7 @@ dotnet run -c Release --project SkarmStyrning.Client
 Vill du ha en fristående .exe som inte kräver .NET på datorn:
 
 ```bash
-dotnet publish SkarmStyrning.Client -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -o publish/klient
+dotnet publish SkarmStyrning.Client -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -o publish/klient
 ```
 
 ## Koppla ihop jobbdatorn
