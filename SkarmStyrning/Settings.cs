@@ -155,6 +155,69 @@ public static class Settings
         }
     }
 
+    /// <summary>
+    /// Kopplingstabellen: dator ("server" eller klient-id) sitter på ingången code på skärmen dev
+    /// (null = ingen/okänd). En ingång kan bara höra till en dator, och en dator till en ingång per skärm.
+    /// </summary>
+    public static void SetConnection(string dev, string computer, byte? code)
+    {
+        lock (Gate)
+        {
+            var key = S.InputOwners.Keys.FirstOrDefault(k => string.Equals(k, dev, StringComparison.OrdinalIgnoreCase)) ?? dev;
+            if (!S.InputOwners.TryGetValue(key, out var map)) S.InputOwners[key] = map = new();
+            var homeKey = S.HomeInputs.Keys.FirstOrDefault(k => string.Equals(k, dev, StringComparison.OrdinalIgnoreCase));
+
+            // Släpp datorns tidigare ingång.
+            if (computer == "server") { if (homeKey != null) S.HomeInputs.Remove(homeKey); }
+            else foreach (var k in map.Where(kv => kv.Value == computer).Select(kv => kv.Key).ToList()) map.Remove(k);
+
+            if (code is byte c)
+            {
+                // Ingången tas från den dator som hade den.
+                map.Remove(c.ToString("X2"));
+                homeKey = S.HomeInputs.Keys.FirstOrDefault(k => string.Equals(k, dev, StringComparison.OrdinalIgnoreCase));
+                if (homeKey != null && S.HomeInputs[homeKey] == c && computer != "server") S.HomeInputs.Remove(homeKey);
+                if (computer == "server") S.HomeInputs[dev] = c;
+                else map[c.ToString("X2")] = computer;
+            }
+            Save();
+        }
+    }
+
+    /// <summary>En avläsning som går att lita på: den blir sanningen om vad skärmen visar.</summary>
+    public static void ObserveInput(string dev, byte code)
+    {
+        lock (Gate)
+        {
+            if (S.LastInputs.TryGetValue(dev, out var cur) && cur == code) return;
+            S.LastInputs[dev] = code;
+            foreach (var k in S.MonitorOwners.Keys.Where(k => string.Equals(k, dev, StringComparison.OrdinalIgnoreCase)).ToList())
+                S.MonitorOwners.Remove(k); // nu vet appen själv – släpp en manuell upplysning
+            Save();
+        }
+    }
+
+    /// <summary>
+    /// Rensa kopplingar som inte kan stämma: ingångar skärmen inte har, eller den här datorns egen ingång.
+    /// (Tidigare versioner gissade kopplingar i det tysta och kunde spara fel.)
+    /// </summary>
+    public static void PruneInputOwners(string dev, IReadOnlyCollection<byte> supported)
+    {
+        if (supported.Count == 0) return;
+        lock (Gate)
+        {
+            var key = S.InputOwners.Keys.FirstOrDefault(k => string.Equals(k, dev, StringComparison.OrdinalIgnoreCase));
+            if (key == null) return;
+            var map = S.InputOwners[key];
+            byte? home = S.HomeInputs.TryGetValue(dev, out var h) ? h : null;
+            var bad = map.Keys.Where(k => !byte.TryParse(k, System.Globalization.NumberStyles.HexNumber, null, out var c)
+                                          || !supported.Contains(c) || c == home).ToList();
+            if (bad.Count == 0) return;
+            foreach (var b in bad) map.Remove(b);
+            Save();
+        }
+    }
+
     public static byte? LastInput(string dev)
     {
         lock (Gate) return S.LastInputs.TryGetValue(dev, out var c) ? c : null;

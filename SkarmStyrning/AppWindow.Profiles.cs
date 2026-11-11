@@ -2,25 +2,23 @@ using System.Text.Json.Nodes;
 
 namespace SkarmStyrning;
 
-/// <summary>Redigera profiler utan att lägga på dem.</summary>
+/// <summary>
+/// Profiler: för varje skärm vilken dator den ska visa. Ingången räknas ut via kopplingstabellen,
+/// och den här datorn släpper skärmar som visar en annan dator – så kan "bild" och "ingång" aldrig
+/// säga emot varandra.
+/// </summary>
 public sealed partial class AppWindow
 {
-    /// <summary>
-    /// Andra datorer som profilen byter skärmar till (via ingångarna), och om de är anslutna.
-    /// Är en sådan dator inte ansluten går det inte att byta tillbaka – då ska profilen inte användas.
-    /// </summary>
+    string? ClientName(string id) =>
+        net?.Session(id)?.Name ?? net?.PairedClients().FirstOrDefault(c => c.Id == id)?.Name;
+
+    /// <summary>Andra datorer som profilen visar på någon skärm, och om de är anslutna.</summary>
     List<(string id, string name, bool connected)> RequiredClients(Profile p)
     {
         var list = new List<(string id, string name, bool connected)>();
-        if (net == null || p.Inputs == null) return list;
-        foreach (var (dev, code) in p.Inputs)
-        {
-            var owner = Settings.InputOwner(dev, code);
-            if (owner == null || list.Any(x => x.id == owner)) continue;
-            var session = net.Session(owner);
-            string name = session?.Name ?? net.PairedClients().FirstOrDefault(c => c.Id == owner)?.Name ?? "en annan dator";
-            list.Add((owner, name, session != null));
-        }
+        if (net == null || p.Spec == null) return list;
+        foreach (var id in p.Spec.Clients())
+            list.Add((id, ClientName(id) ?? "en annan dator", net.Session(id) != null));
         return list;
     }
 
@@ -34,28 +32,112 @@ public sealed partial class AppWindow
                $"Starta klienten på {who} först – annars går det inte att byta tillbaka härifrån.";
     }
 
+    string ProfileDescription(Profile p) => p.Spec?.Describe(ClientName) ?? p.Layout?.Description ?? "";
+
+    // ---------------- Omvandling av äldre profiler ----------------
+
+    /// <summary>
+    /// Äldre profiler sparade råa ingångskoder och "bild" separat. Gör om dem till "vilken dator
+    /// visas" via kopplingstabellen. Ingångar som inte går att koppla till en dator blir "Ändra inte".
+    /// </summary>
+    void MigrateProfiles()
+    {
+        bool changed = false;
+        foreach (var p in profiles)
+        {
+            if (p.Spec != null && p.Spec.Monitors.All(m => m.Show != null) && p.Inputs == null) continue;
+            var spec = p.Spec ?? (p.Layout != null ? DisplayConfig.SpecFromSnapshot(p.Layout) : null);
+            bool layoutKnown = spec != null;
+            spec ??= new ProfileLayout();
+            // Se till att alla kända skärmar finns med.
+            foreach (var item in PositionMemory.Items().Where(i => !PositionMemory.IsClientScreen(i.Dev)))
+                if (!spec.Monitors.Any(m => string.Equals(m.Dev, item.Dev, StringComparison.OrdinalIgnoreCase)))
+                    spec.Monitors.Add(new ProfileMonitor { Dev = item.Dev, Name = item.Name, Mode = layoutKnown ? "off" : "keep" });
+
+            foreach (var m in spec.Monitors.Where(m => m.Show == null))
+            {
+                byte? code = p.Inputs?.FirstOrDefault(kv => string.Equals(kv.Key, m.Dev, StringComparison.OrdinalIgnoreCase)) is { Key: not null } kv ? kv.Value : null;
+                string? who = code is byte c ? ComputerForInput(m.Dev, null, c) : null;
+                if (who != null && who != "server") { m.Show = who; m.Mode = "off"; }
+                else if (!layoutKnown) { m.Show = who == "server" ? "server" : "keep"; m.Mode = "keep"; }
+                else m.Show = m.Mode == "off" ? "off" : "server";
+            }
+            p.Spec = spec;
+            p.Layout = null;
+            p.Inputs = null;
+            p.InputLabels = null;
+            changed = true;
+        }
+        if (changed) ProfileStore.Save(profiles);
+    }
+
+    // ---------------- Spara nuvarande ----------------
+
+    /// <summary>
+    /// Profil av hur det är just nu: den här datorns skärmlayout, och för varje skärm vilken dator
+    /// den visar enligt appens sanning (inte vad skärmen själv påstår).
+    /// </summary>
+    ProfileLayout SpecFromNow(ProfileLayout spec)
+    {
+        foreach (var p in Placed().Where(p => !PositionMemory.IsClientScreen(p.id)))
+        {
+            var t = targets.FirstOrDefault(x => x.Id == p.id);
+            var m = spec.Monitors.FirstOrDefault(x => string.Equals(x.Dev, p.id, StringComparison.OrdinalIgnoreCase));
+            if (m == null) spec.Monitors.Add(m = new ProfileMonitor { Dev = p.id, Name = t?.Label ?? p.name, Mode = "off" });
+            var (owner, _) = ResolveOwner(p.id, t);
+            if (owner is not (null or "other" or "none")) { m.Show = owner; m.Mode = "off"; }
+            else m.Show = m.Mode == "off" ? "off" : "server";
+        }
+        return spec;
+    }
+
+    // ---------------- Redigera ----------------
+
     object GetProfileForEdit(string name)
     {
         var p = profiles.FirstOrDefault(x => x.Name == name) ?? throw new InvalidOperationException("Profilen finns inte.");
-        var spec = p.Spec ?? (p.Layout != null ? DisplayConfig.SpecFromSnapshot(p.Layout) : null);
-        var monitors = Placed().Where(x => !PositionMemory.IsClientScreen(x.id)).Select(x =>
+        var spec = p.Spec ?? new ProfileLayout();
+        var placed = Placed().Where(x => !PositionMemory.IsClientScreen(x.id)).ToList();
+        var clients = net?.PairedClients() ?? new List<PairedClient>();
+        var monitors = placed.Select(x =>
         {
             var t = targets.FirstOrDefault(t => t.Id == x.id);
-            var pm = spec?.Monitors.FirstOrDefault(m => string.Equals(m.Dev, x.id, StringComparison.OrdinalIgnoreCase));
+            var pm = spec.Monitors.FirstOrDefault(m => string.Equals(m.Dev, x.id, StringComparison.OrdinalIgnoreCase));
             var pref = PositionMemory.Preferred(x.id);
             List<VideoMode> modes = new();
             if (t is { Active: true, GdiName: not null }) try { modes = DisplayModes.List(t.GdiName); } catch { }
-            var codes = caps.TryGetValue(x.id, out var known) && known.Count > 0 ? known.ToList() : Ddc.CommonInputs.ToList();
-            byte? input = p.Inputs != null && p.Inputs.FirstOrDefault(kv => string.Equals(kv.Key, x.id, StringComparison.OrdinalIgnoreCase)) is { Key: not null } kv2 ? kv2.Value : null;
-            if (input is byte b && !codes.Contains(b)) codes.Insert(0, b);
+
+            string value = pm?.Show switch
+            {
+                null => "off",
+                "server" => pm.Mode == "clone" && pm.CloneOf != null ? "clone:" + pm.CloneOf : "server",
+                var s => s,
+            };
+            var options = new List<object> { new { value = "server", label = "Den här datorn", needsMapping = false } };
+            foreach (var o in placed.Where(o => o.id != x.id))
+                options.Add(new { value = "clone:" + o.id, label = $"Den här datorn – samma bild som {targets.FirstOrDefault(t => t.Id == o.id)?.Label ?? o.name}", needsMapping = false });
+            foreach (var c in clients)
+            {
+                var code = InputForComputer(x.id, c.Id);
+                options.Add(new { value = c.Id, label = $"{c.Name} – {(code is byte b ? Ddc.InputName(b) : "ingång okänd")}", needsMapping = code == null });
+            }
+            // Profilens dator finns inte bland de parade (t.ex. borttagen) – visa den ändå så att den inte skrivs över.
+            if (pm?.Show is string sh && sh is not ("server" or "off" or "keep") && !clients.Any(c => c.Id == sh))
+            {
+                var code = InputForComputer(x.id, sh);
+                options.Add(new { value = sh, label = $"{ClientName(sh) ?? "Annan dator"} – {(code is byte b ? Ddc.InputName(b) : "ingång okänd")}", needsMapping = code == null });
+            }
+            options.Add(new { value = "off", label = "Av (används inte här)", needsMapping = false });
+            options.Add(new { value = "keep", label = "Ändra inte", needsMapping = false });
+
             return new
             {
                 dev = x.id,
                 name = t?.Label ?? x.name,
                 number = x.number,
                 connected = t != null,
-                mode = pm?.Mode ?? (spec == null ? "extend" : "off"),
-                cloneOf = pm?.CloneOf,
+                value,
+                options,
                 width = pm?.Width,
                 height = pm?.Height,
                 hz = pm?.Hz,
@@ -63,12 +145,9 @@ public sealed partial class AppWindow
                 resolutions = modes.GroupBy(m => (m.Width, m.Height))
                     .Select(g => new { w = g.Key.Width, h = g.Key.Height, hz = g.Select(v => v.Hz).Distinct().OrderByDescending(v => v).ToList() })
                     .ToList(),
-                input,
-                home = Settings.HomeInput(x.id),
-                inputs = codes.Select(c => new { code = c, name = Ddc.InputName(c), computer = ComputerOnInput(x.id, c) }),
             };
         }).ToList();
-        return new { name = p.Name, hasLayout = spec != null, primary = spec?.Primary, monitors };
+        return new { name = p.Name, primary = spec.Primary, monitors };
     }
 
     async Task SaveProfileEdit(JsonNode a)
@@ -81,68 +160,53 @@ public sealed partial class AppWindow
             throw new InvalidOperationException($"Det finns redan en profil som heter \"{name}\".");
 
         var placed = Placed();
-        string NameOf(string dev) => targets.FirstOrDefault(t => t.Id == dev)?.Label
-            ?? placed.FirstOrDefault(x => x.id == dev).name ?? "Skärm";
+        string NameOf(string dev) => targets.FirstOrDefault(t => t.Id == dev)?.Label ?? placed.FirstOrDefault(x => x.id == dev).name ?? "Skärm";
 
-        ProfileLayout? spec = null;
-        if (a["hasLayout"]?.GetValue<bool>() == true)
+        var spec = new ProfileLayout { Primary = a["primary"]?.GetValue<string>() };
+        foreach (var m in a["monitors"] as JsonArray ?? new())
         {
-            spec = new ProfileLayout { Primary = a["primary"]?.GetValue<string>() };
-            foreach (var m in a["monitors"] as JsonArray ?? new())
-            {
-                if (m == null) continue;
-                string dev = m["dev"]!.GetValue<string>();
-                spec.Monitors.Add(new ProfileMonitor
-                {
-                    Dev = dev,
-                    Name = NameOf(dev),
-                    Mode = m["mode"]?.GetValue<string>() is "off" or "clone" ? m["mode"]!.GetValue<string>() : "extend",
-                    CloneOf = m["cloneOf"]?.GetValue<string>(),
-                    Width = m["width"]?.GetValue<int?>(),
-                    Height = m["height"]?.GetValue<int?>(),
-                    Hz = m["hz"]?.GetValue<int?>(),
-                });
-            }
-            if (!spec.Monitors.Any(m => m.Mode != "off")) throw new InvalidOperationException("Minst en skärm måste vara på i profilen.");
-            if (spec.Primary == null || spec.Monitors.FirstOrDefault(m => m.Dev == spec.Primary)?.Mode is not "extend")
-                spec.Primary = spec.Monitors.FirstOrDefault(m => m.Mode == "extend")?.Dev ?? spec.Monitors.First(m => m.Mode != "off").Dev;
+            if (m == null) continue;
+            string dev = m["dev"]!.GetValue<string>();
+            string value = m["value"]?.GetValue<string>() ?? "keep";
+            var pm = new ProfileMonitor { Dev = dev, Name = NameOf(dev) };
+            if (value == "server")
+                (pm.Show, pm.Mode, pm.Width, pm.Height, pm.Hz) = ("server", "extend", m["width"]?.GetValue<int?>(), m["height"]?.GetValue<int?>(), m["hz"]?.GetValue<int?>());
+            else if (value.StartsWith("clone:")) (pm.Show, pm.Mode, pm.CloneOf) = ("server", "clone", value[6..]);
+            else if (value is "off" or "keep") (pm.Show, pm.Mode) = (value, value);
+            else (pm.Show, pm.Mode) = (value, "off"); // en annan dator
+            spec.Monitors.Add(pm);
         }
+        bool desktopHasScreen = spec.Monitors.Any(m => (m.Show == "server" && m.Mode is "extend" or "clone") || m.Show == "keep");
+        if (!desktopHasScreen) throw new InvalidOperationException("Den här datorn behöver minst en skärm i profilen (eller \"Ändra inte\" på någon).");
+        if (spec.Primary == null || spec.Monitors.FirstOrDefault(m => m.Dev == spec.Primary) is not { Show: "server", Mode: "extend" })
+            spec.Primary = spec.Monitors.FirstOrDefault(m => m.Show == "server" && m.Mode == "extend")?.Dev;
 
-        var inputsMap = new Dictionary<string, byte>();
-        var labels = new Dictionary<string, string>();
-        if (a["inputs"] is JsonObject io)
-            foreach (var (dev, v) in io)
-            {
-                if (v == null) continue;
-                byte code = (byte)v.GetValue<int>();
-                inputsMap[dev] = code;
-                labels[dev] = $"{NameOf(dev)} → {Ddc.InputName(code)}";
-            }
-
-        // Kolla med Windows (utan att verkställa) att layouten går att lägga på just nu.
-        List<string> warnings = new();
-        if (spec != null)
-            warnings = await Task.Run(() =>
-            {
-                DisplayConfig.ValidateLog = new();
-                try { return Actions.ApplySpec(spec, validateOnly: true); }
-                catch (Exception ex) { return new List<string> { ex.Message }; }
-                finally { DisplayConfig.ValidateLog = null; }
-            });
+        // Kolla att Windows godtar layouten (utan att verkställa) och att kopplingarna finns.
+        var warnings = new List<string>();
+        foreach (var m in spec.Monitors.Where(m => m.Show is not (null or "server" or "off" or "keep")))
+            if (InputForComputer(m.Dev, m.Show!) == null)
+                warnings.Add($"{m.Name}: ange vilken ingång {ClientName(m.Show!) ?? "datorn"} sitter på (Kopplingar)");
+        warnings.AddRange(await Task.Run(() =>
+        {
+            DisplayConfig.ValidateLog = new();
+            try { return Actions.DesktopLayout(spec) is { } d ? Actions.ApplySpec(d, validateOnly: true) : new List<string>(); }
+            catch (Exception ex) { return new List<string> { ex.Message }; }
+            finally { DisplayConfig.ValidateLog = null; }
+        }));
 
         if (Settings.LastProfile == original) Settings.LastProfile = name;
         p.Name = name;
         p.Spec = spec;
-        p.Layout = null; // äldre format ersätts av det redigerbara
-        p.Inputs = inputsMap.Count > 0 ? inputsMap : null;
-        p.InputLabels = labels.Count > 0 ? labels : null;
+        p.Layout = null;
+        p.Inputs = null;
+        p.InputLabels = null;
         ProfileStore.Save(profiles);
         RegisterHotkeys();
         BuildTrayMenu();
         await PushState();
 
         if (warnings.Count > 0)
-            Toast($"Profilen \"{name}\" är sparad, men går inte att lägga på helt just nu: {string.Join("; ", warnings)}", "info");
+            Toast($"Profilen \"{name}\" är sparad, men: {string.Join("; ", warnings)}", "info");
         else
             Toast($"Profilen \"{name}\" är sparad.", "success");
 

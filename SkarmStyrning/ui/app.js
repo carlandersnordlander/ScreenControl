@@ -420,6 +420,7 @@ function renderInspector() {
         </select>
         ${manualNote}
         ${cmSelect}
+        ${connectionsHtml(m, ow)}
         ${(m.computers || []).length > 1 ? `<div class="on-list">Ansluten till: ${m.computers.map(c => `<span class="chip">${c.id ? ICON.laptop : ICON.monitor}${esc(c.name)}${c.input ? ' · ' + esc(c.input) : ''}</span>`).join('')}</div>` : ''}
       </div>`;
   }
@@ -431,6 +432,26 @@ function renderInspector() {
   // Detaljer
   html += detailsSection(m, inp);
   box.innerHTML = html;
+}
+
+/** Kopplingar: vilken ingång varje dator sitter på. Profilerna och "Visar" bygger på den här tabellen. */
+function connectionsHtml(m, ow) {
+  const cn = ow.connections;
+  if (!cn) return '';
+  const missing = cn.rows.filter(r => r.code == null);
+  return `
+    <details class="connections" ${missing.length ? 'open' : ''}>
+      <summary>Kopplingar${missing.length ? ` <span class="chip warn">${missing.length} okänd${missing.length > 1 ? 'a' : ''}</span>` : ''}</summary>
+      <p class="conn-help">Vilken ingång på skärmen sitter varje dator på? Profiler byter ingång efter den här tabellen.</p>
+      ${cn.rows.map(r => `
+        <label class="conn-row">
+          <span>${r.computer === 'server' ? ICON.monitor : ICON.laptop}${esc(r.name)}</span>
+          <select class="select conn-sel" data-computer="${esc(r.computer)}">
+            <option value="-1" ${r.code == null ? 'selected' : ''}>${r.code == null ? 'Okänd – välj ingång' : 'Inte ansluten'}</option>
+            ${cn.options.map(o => `<option value="${o.code}" ${r.code === o.code ? 'selected' : ''}>${esc(o.name)}</option>`).join('')}
+          </select>
+        </label>`).join('')}
+    </details>`;
 }
 
 /** Ingångar – direkt härifrån, eller via en ansluten dator när den här datorn inte når skärmen. */
@@ -547,6 +568,7 @@ $('#inspector').addEventListener('click', e => {
 $('#inspector').addEventListener('change', e => {
   if (e.target.id === 'cloneWith') applyMode(selectedId, 'clone', e.target.value);
   if (e.target.id === 'ownerSel') call('setOwner', { id: selectedId, owner: e.target.value }).catch(() => {});
+  if (e.target.classList.contains('conn-sel')) call('setConnection', { id: selectedId, computer: e.target.dataset.computer, code: Number(e.target.value) }).catch(() => {});
   if (e.target.id === 'cmSel') call('mapClientMonitor', { id: selectedId, client: e.target.dataset.client, ident: e.target.value }).catch(() => {});
   if (e.target.id === 'resSel' || e.target.id === 'hzSel') {
     const m = byId(selectedId);
@@ -718,7 +740,7 @@ function renderProfiles() {
       ${hotkeyButton(p.hotkey, 'hotkey')}
       <div class="profile-meta">
         ${p.layout ? `<span title="${esc(p.layout)}">${ICON.monitor.replace('<svg', '<svg style="width:12px;height:12px;vertical-align:-2px"')} ${esc(p.layout)}</span>` : ''}
-        ${p.inputs.length ? `<span title="${esc(p.inputs.join(', '))}">${PORT.hdmi.replace('<svg', '<svg style="width:12px;height:12px;vertical-align:-2px"')} ${esc(p.inputs.join(' · '))}</span>` : ''}
+
       </div>
       ${(p.requires || []).length ? `<div class="requires">${p.requires.map(r =>
         `<span class="chip ${r.connected ? 'on' : 'warn'}" title="${r.connected ? 'Ansluten' : 'Inte ansluten – starta klienten där'}">${ICON.laptop}Kräver ${esc(r.name)}${r.connected ? '' : ' · ej ansluten'}</span>`).join('')}</div>` : ''}
@@ -750,16 +772,15 @@ $('#btnNewProfile').onclick = () => {
   const def = `Profil ${(state.profiles || []).length + 1}`;
   modal(`
     <h3>Ny profil</h3>
-    <p>Sparar skärmarna precis som de är just nu.</p>
+    <p>Sparar hur det är just nu: vilken dator varje skärm visar, och den här datorns skärmlayout och upplösningar.
+      Stämmer inte "Visar" på någon skärm – rätta det i skärmens panel först.</p>
     <div class="field"><label for="pName">Namn</label><input class="input" id="pName" value="${esc(def)}" maxlength="40"></div>
-    <div class="toggle-row"><div><strong>Skärmlayout</strong><span>Vilka skärmar som är på, upplösning och placering</span></div><label class="switch"><input type="checkbox" id="pLayout" checked><i></i></label></div>
-    <div class="toggle-row"><div><strong>Ingångar</strong><span>Vilken källa varje skärm visar</span></div><label class="switch"><input type="checkbox" id="pInputs" checked><i></i></label></div>
     <div class="modal-actions"><button class="btn ghost" data-close>Avbryt</button><button class="btn primary" id="pSave">Spara profil</button></div>`,
     root => {
       const name = $('#pName', root);
       name.focus(); name.select();
       const save = () => {
-        call('saveProfile', { name: name.value, layout: $('#pLayout', root).checked, inputs: $('#pInputs', root).checked }).catch(() => {});
+        call('saveProfile', { name: name.value }).catch(() => {});
         closeModal();
       };
       $('#pSave', root).onclick = save;
@@ -772,7 +793,6 @@ async function editProfile(name) {
   let pr;
   try { pr = await call('getProfile', { name }); } catch { return; }
   const mons = pr.monitors;
-  const nameOf = dev => mons.find(m => m.dev === dev)?.name || 'Skärm';
 
   const resOptions = m => {
     const list = [];
@@ -782,29 +802,15 @@ async function editProfile(name) {
     return `<option value="">Standard${m.preferred ? ` (${esc(m.preferred)})` : ''}</option>`
       + list.map(o => { const v = `${o.w}|${o.h}|${o.hz}`; return `<option value="${v}" ${v === sel ? 'selected' : ''}>${o.w} × ${o.h} @ ${o.hz} Hz</option>`; }).join('');
   };
-  const modeOptions = m => `
-    <option value="off" ${m.mode === 'off' ? 'selected' : ''}>Av (används inte här)</option>
-    <option value="extend" ${m.mode === 'extend' ? 'selected' : ''}>Utökad</option>
-    ${mons.filter(o => o.dev !== m.dev).map(o => `<option value="clone:${esc(o.dev)}" ${m.mode === 'clone' && m.cloneOf === o.dev ? 'selected' : ''}>Duplicera ${esc(o.name)}</option>`).join('')}`;
-  const inputOptions = m => `<option value="">Ändra inte</option>` + m.inputs.map(o =>
-    `<option value="${o.code}" ${m.input === o.code ? 'selected' : ''}>${esc(o.name)}${o.computer ? ' – ' + esc(o.computer) : m.home != null && o.code !== m.home ? ' – annan källa' : ''}</option>`).join('');
-  /** Visar ingången en annan dator (eller annan källa än den här datorns)? */
-  const isOther = (m, code) => {
-    if (code == null) return false;
-    const o = m.inputs.find(x => x.code === code);
-    if (o?.computer) return o.computer !== 'Den här datorn';
-    return m.home != null && code !== m.home;
-  };
+  const showOptions = m => m.options.map(o =>
+    `<option value="${esc(o.value)}" ${o.value === m.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('');
 
   modal(`
     <h3>Redigera profil</h3>
-    <p>Ändringarna sparas utan att profilen läggs på. Placeringen följer skärmlayouten i huvudfönstret.</p>
-    <div class="notice info" style="margin-bottom:14px">${ICON.info}<div><b>Den här datorns bild</b> = hur den här datorn använder skärmen.
-      <b>Ingång</b> = vad skärmen visar. Ska en skärm visa en annan dator (t.ex. laptopen), välj den ingången –
-      då sätts bilden till <i>Av</i> så att den här datorn bara använder de andra skärmarna.</div></div>
+    <p>Välj vad varje skärm ska visa. Ändringarna sparas utan att profilen läggs på.</p>
+    <div class="notice info" style="margin-bottom:14px">${ICON.info}<div>Väljer du en annan dator byter skärmen till den datorns ingång,
+      och den här datorn slutar använda skärmen. Vilken ingång varje dator sitter på ställer du in under <b>Kopplingar</b> i skärmens panel.</div></div>
     <div class="field"><label for="peName">Namn</label><input class="input" id="peName" value="${esc(pr.name)}" maxlength="40"></div>
-    <div class="toggle-row"><div><strong>Ändra skärmlayout</strong><span>Vilka skärmar som är på, huvudskärm och upplösning. Av = profilen byter bara ingångar.</span></div>
-      <label class="switch"><input type="checkbox" id="peLayout" ${pr.hasLayout ? 'checked' : ''}><i></i></label></div>
     <div class="pe-list" id="peList">
       ${mons.map(m => `
         <div class="pe-mon" data-dev="${esc(m.dev)}">
@@ -813,10 +819,9 @@ async function editProfile(name) {
             <div class="pe-title"><b>${esc(m.name)}</b><span>${m.connected ? '' : 'Inte ansluten just nu'}</span></div>
             <label class="pe-primary" title="Huvudskärm i profilen"><input type="radio" name="pePrim" value="${esc(m.dev)}" ${pr.primary === m.dev ? 'checked' : ''}>${ICON.star}Huvudskärm</label>
           </div>
-          <div class="pe-grid">
-            <label><span>Den här datorns bild</span><select class="select pe-mode">${modeOptions(m)}</select></label>
+          <div class="pe-grid two">
+            <label><span>Visar</span><select class="select pe-show">${showOptions(m)}</select></label>
             <label><span>Upplösning och Hz</span><select class="select pe-res">${resOptions(m)}</select></label>
-            <label><span>Ingång</span><select class="select pe-input">${inputOptions(m)}</select></label>
           </div>
           <div class="pe-note"></div>
         </div>`).join('')}
@@ -829,41 +834,28 @@ async function editProfile(name) {
     </div>`,
     root => {
       root.querySelector('.modal').classList.add('wide');
-      const layoutOn = () => $('#peLayout', root).checked;
       const monOf = row => mons.find(x => x.dev === row.dataset.dev);
-      const inputOf = row => { const v = row.querySelector('.pe-input').value; return v === '' ? null : Number(v); };
-
-      // Ingång till en annan dator → den här datorns bild av där (och tillbaka till utökad för vår egen ingång).
-      root.addEventListener('change', e => {
-        const sel = e.target.closest('.pe-input');
-        if (!sel || !layoutOn()) return;
-        const row = sel.closest('.pe-mon'), m = monOf(row), code = inputOf(row);
-        const modeSel = row.querySelector('.pe-mode');
-        if (isOther(m, code)) modeSel.value = 'off';
-        else if (code != null && modeSel.value === 'off') modeSel.value = 'extend';
-      });
+      const showOf = row => row.querySelector('.pe-show').value;
 
       const sync = () => {
         for (const row of root.querySelectorAll('.pe-mon')) {
-          const mode = row.querySelector('.pe-mode').value;
-          const m = monOf(row), code = inputOf(row);
-          const other = isOther(m, code);
-          const who = m.inputs.find(x => x.code === code)?.computer || 'en annan källa';
+          const m = monOf(row), v = showOf(row);
+          const opt = m.options.find(o => o.value === v);
+          const isClient = !['server', 'off', 'keep'].includes(v) && !v.startsWith('clone:');
           const note = row.querySelector('.pe-note');
-          note.className = 'pe-note' + (other && layoutOn() && mode !== 'off' ? ' warn' : '');
-          note.innerHTML = !other ? ''
-            : !layoutOn() || mode === 'off' ? `${ICON.laptop}Skärmen visar <b>${esc(who)}</b> – den här datorn använder den inte.`
-            : `${ICON.warn}Skärmen visar <b>${esc(who)}</b>, men den här datorn har kvar en osynlig yta där. Välj <i>Av</i> för att bara använda de andra skärmarna.`;
-          const ext = layoutOn() && mode === 'extend';
-          row.querySelector('.pe-mode').disabled = !layoutOn();
+          note.className = 'pe-note' + (opt?.needsMapping ? ' warn' : '');
+          note.innerHTML = opt?.needsMapping
+            ? `${ICON.warn}Appen vet inte vilken ingång datorn sitter på. Ange det under <b>Kopplingar</b> i skärmens panel.`
+            : isClient ? `${ICON.laptop}Skärmen byter till den datorn – den här datorn använder den inte.`
+            : v === 'keep' ? 'Profilen rör inte den här skärmen.' : '';
+          const ext = v === 'server';
           row.querySelector('.pe-res').disabled = !ext;
           row.querySelector('.pe-primary input').disabled = !ext;
           row.querySelector('.pe-primary').classList.toggle('disabled', !ext);
-          row.classList.toggle('off', layoutOn() && mode === 'off');
+          row.classList.toggle('off', v === 'off' || isClient);
         }
-        // Huvudskärmen måste vara på – flytta valet om den stängs av.
         const prim = root.querySelector('input[name="pePrim"]:checked');
-        if (layoutOn() && (!prim || prim.disabled)) {
+        if (!prim || prim.disabled) {
           const first = [...root.querySelectorAll('input[name="pePrim"]')].find(r => !r.disabled);
           if (first) first.checked = true;
         }
@@ -873,22 +865,16 @@ async function editProfile(name) {
 
       const collect = apply => {
         const monitors = [...root.querySelectorAll('.pe-mon')].map(row => {
-          const mv = row.querySelector('.pe-mode').value;
-          const rv = row.querySelector('.pe-res').value;
-          const [w, h, hz] = rv ? rv.split('|').map(Number) : [null, null, null];
-          return { dev: row.dataset.dev, mode: mv.startsWith('clone:') ? 'clone' : mv, cloneOf: mv.startsWith('clone:') ? mv.slice(6) : null,
-                   width: mv === 'extend' ? w : null, height: mv === 'extend' ? h : null, hz: mv === 'extend' ? hz : null };
+          const v = showOf(row), rv = row.querySelector('.pe-res').value;
+          const [w, h, hz] = v === 'server' && rv ? rv.split('|').map(Number) : [null, null, null];
+          return { dev: row.dataset.dev, value: v, width: w, height: h, hz };
         });
-        const inputs = {};
-        for (const row of root.querySelectorAll('.pe-mon')) {
-          const v = row.querySelector('.pe-input').value;
-          if (v !== '') inputs[row.dataset.dev] = Number(v);
+        if (!monitors.some(m => m.value === 'server' || m.value === 'keep' || m.value.startsWith('clone:'))) {
+          toast('Den här datorn behöver minst en skärm i profilen.', 'error'); return;
         }
-        if (layoutOn() && !monitors.some(m => m.mode !== 'off')) { toast('Minst en skärm måste vara på i profilen.', 'error'); return; }
-        if (!layoutOn() && !Object.keys(inputs).length) { toast('Profilen gör ingenting – slå på skärmlayout eller välj minst en ingång.', 'error'); return; }
         call('saveProfileEdit', {
-          original: pr.name, name: $('#peName', root).value, hasLayout: layoutOn(),
-          primary: root.querySelector('input[name="pePrim"]:checked')?.value || null, monitors, inputs, apply,
+          original: pr.name, name: $('#peName', root).value,
+          primary: root.querySelector('input[name="pePrim"]:checked')?.value || null, monitors, apply,
         }).then(() => closeModal()).catch(() => {});
       };
       $('#peSave', root).onclick = () => collect(false);

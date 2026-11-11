@@ -65,7 +65,7 @@ static class Program
                         log.Add($"   ({prof.Name}: {spec.Describe()}, huvudskärm {spec.Monitors.FirstOrDefault(m => m.Dev == spec.Primary)?.Name})");
                         Try("Profil " + prof.Name, () =>
                         {
-                            var errs = Actions.ApplySpec(spec, validateOnly: true);
+                            var errs = Actions.DesktopLayout(spec) is { } d ? Actions.ApplySpec(d, validateOnly: true) : new List<string>();
                             if (errs.Count > 0) throw new InvalidOperationException(string.Join("; ", errs));
                         });
                     }

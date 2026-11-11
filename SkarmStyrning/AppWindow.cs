@@ -116,6 +116,7 @@ public sealed partial class AppWindow : Form
             if (changed) ProfileStore.Save(profiles);
             RegisterHotkeys();
             StartKvm();
+            MigrateProfiles();
         }
         try
         {
@@ -364,6 +365,7 @@ public sealed partial class AppWindow : Form
     Task PushState()
     {
         EnsureClientScreens();
+        ObserveInputs();
         RebuildRegions();
         if (uiReady) Post(new { type = "state", state = BuildState() });
         return Task.CompletedTask;
@@ -521,7 +523,7 @@ public sealed partial class AppWindow : Form
                 return null;
 
             case "saveProfile":
-                await SaveProfile(Str("name"), Bool("layout"), Bool("inputs"));
+                await SaveProfile(Str("name"));
                 return null;
 
             case "applyProfile":
@@ -674,33 +676,19 @@ public sealed partial class AppWindow : Form
             {
                 caps[t.Id] = info.Supported;
                 lock (Smart.KnownCaps) Smart.KnownCaps[t.DevicePath] = info.Supported;
+                Settings.PruneInputOwners(t.DevicePath, info.Supported); // släng kopplingar till ingångar som inte finns
             }
             inputs[t.Id] = info;
             await PushState();
         }
     }
 
-    async Task SaveProfile(string name, bool withLayout, bool withInputs)
+    async Task SaveProfile(string name)
     {
         name = name.Trim();
         if (name == "") throw new InvalidOperationException("Ge profilen ett namn.");
-        if (!withLayout && !withInputs) throw new InvalidOperationException("Välj minst en sak att spara.");
-
-        var p = new Profile { Name = name };
-        if (withLayout) p.Spec = await Task.Run(DisplayConfig.SpecFromCurrent);
-        if (withInputs)
-        {
-            p.Inputs = new();
-            p.InputLabels = new();
-            foreach (var t in targets.Where(t => t.Active))
-            {
-                caps.TryGetValue(t.Id, out var known);
-                var info = await Task.Run(() => Ddc.Read(t.GdiName, t.PhysIndex, known));
-                if (info.Current is not uint c) continue;
-                p.Inputs[t.DevicePath] = (byte)c;
-                p.InputLabels[t.DevicePath] = $"{t.Label} → {Ddc.InputName((byte)c)}";
-            }
-        }
+        // Spara appens sanning: vilken dator varje skärm visar och den här datorns layout.
+        var p = new Profile { Name = name, Spec = SpecFromNow(await Task.Run(DisplayConfig.SpecFromCurrent)) };
         int i = profiles.FindIndex(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         if (i >= 0)
         {
@@ -785,8 +773,7 @@ public sealed partial class AppWindow : Form
             profiles = profiles.Select(p => new
             {
                 name = p.Name,
-                layout = p.Spec?.Describe() ?? p.Layout?.Description,
-                inputs = p.InputLabels?.Values.ToList() ?? new List<string>(),
+                layout = ProfileDescription(p),
                 hotkey = HotkeyState(p.Hotkey),
                 active = p.Name == Settings.LastProfile,
                 requires = RequiredClients(p).Select(c => new { name = c.name, connected = c.connected }).ToList(),

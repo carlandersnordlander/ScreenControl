@@ -37,8 +37,14 @@ public sealed partial class AppWindow
         });
         router.Start();
 
-        // Profiler byter ingång via klienten när den här datorn inte når skärmen.
-        Actions.SetInputAnyRoute = (dev, code) => SetInputRouted(dev, code).GetAwaiter().GetResult();
+        // Profiler byter ingångar via kopplingstabellen och den dator skärmen visar just nu.
+        Actions.Hooks = new Actions.ProfileHooks
+        {
+            InputFor = InputForComputer,
+            Current = dev => CurrentInput(dev, targets.FirstOrDefault(x => string.Equals(x.DevicePath, dev, StringComparison.OrdinalIgnoreCase))),
+            SetInput = (dev, code) => SetInputRouted(dev, code).GetAwaiter().GetResult(),
+            ClientName = id => net?.Session(id)?.Name ?? net?.PairedClients().FirstOrDefault(c => c.Id == id)?.Name,
+        };
 
         // Delat urklipp: kopiera här → finns på de andra datorerna, och tvärtom.
         clipboard = new Net.ClipboardWatcher();
@@ -120,9 +126,43 @@ public sealed partial class AppWindow
     // ---------------- Vem visas på skärmen? ----------------
 
     /// <summary>
-    /// Vilken dator skärmen visar just nu: null = den här, ett klient-id, eller "other" (en annan
-    /// källa som ingen ansluten klient har). Bygger på ingången (DDC/CI), vad klienterna
-    /// rapporterar och vad användaren valt.
+    /// Vilken ingång skärmen visar just nu – appens enda sanning:
+    /// 1) en avläsning som går att lita på (skärmar som rapporterar rätt – härifrån eller från en
+    ///    ansluten dator som ser skärmen),
+    /// 2) annars den ingång appen senast bytte till, eller som du angett under "Visar just nu".
+    /// </summary>
+    byte? CurrentInput(string dev, DisplayTarget? t)
+    {
+        if (!Settings.IsInputUnreliable(dev))
+        {
+            if (t is { Active: true } && inputs.TryGetValue(t.Id, out var info) && info.Current is uint c) return (byte)c;
+            foreach (var (_, m) in Seen(dev, t)) if (m.Input is int ci) return (byte)ci;
+        }
+        return Settings.LastInput(dev);
+    }
+
+    /// <summary>Vilken dator sitter på den här ingången enligt kopplingarna? "server", ett klient-id eller null (okänt).</summary>
+    string? ComputerForInput(string dev, DisplayTarget? t, byte code)
+    {
+        var home = Settings.HomeInput(dev);
+        if (home == code) return "server";
+        if (home == null && t != null && Settings.IsHome(t, code) == true) return "server"; // t.ex. DVI-kabel → DVI 1
+        return Settings.InputOwner(dev, code);
+    }
+
+    /// <summary>Vilken ingång en dator sitter på enligt kopplingarna (null = okänt).</summary>
+    byte? InputForComputer(string dev, string computer)
+    {
+        if (computer == "server") return Settings.HomeInput(dev);
+        for (int c = 1; c < 0x20; c++)
+            if (Settings.InputOwner(dev, (byte)c) == computer) return (byte)c;
+        return null;
+    }
+
+    /// <summary>
+    /// Vilken dator skärmen visar just nu: null = den här, ett klient-id, "other" (en ingång som inte
+    /// är kopplad till någon dator) eller "none" (den här datorn ser inte skärmen och inget annat är känt).
+    /// Bygger bara på ingången och kopplingstabellen – appen gissar inte och lär sig inget i det tysta.
     /// </summary>
     /// <param name="dev">Skärmens device path här.</param>
     /// <param name="t">Skärmen som Windows ser den här (null = den här datorn ser den inte alls just nu).</param>
@@ -133,50 +173,31 @@ public sealed partial class AppWindow
         if (manual == "server") return t == null ? ("none", "manual") : (null, "manual");
         if (manual != null) return (manual, "manual");
 
-        var seen = Seen(dev, t);
-        var reporting = seen.Select(x => x.s).ToList();
-        byte? cur = Settings.EffectiveInput(dev,
-            t is { Active: true } && inputs.TryGetValue(t.Id, out var info) && info.Current is uint c ? (byte)c : null);
-
-        // Den här datorn når inte skärmen – fråga klienterna, de ser den när den visar dem.
-        if (cur == null)
+        if (CurrentInput(dev, t) is byte code)
         {
-            foreach (var (s, m) in seen)
-            {
-                if (m.Input is not int ci) continue;
-                byte code = (byte)ci;
-                bool? home = Settings.HomeInput(dev) is byte h ? h == code : t != null ? Settings.IsHome(t, code) : null;
-                if (home == true) return t is { Active: true } ? (null, "client") : ("none", "client");
-                if (home == false)
-                {
-                    var mapped = Settings.InputOwner(dev, code);
-                    if (mapped != null) return (mapped, "input");
-                    Settings.SetInputOwner(dev, code, s.Id); // klienten ser skärmen på en ingång som inte är vår
-                    return (s.Id, "input");
-                }
-            }
+            var who = ComputerForInput(dev, t, code);
+            if (who == "server") return t == null ? ("none", "input") : (null, "input");
+            if (who != null) return (who, "input");
+            return ("other", "input");
         }
+        return t == null ? ("none", "off") : (null, t.Active ? "default" : "off");
+    }
 
-        if (cur is byte cc)
+    /// <summary>Avläsningar som går att lita på blir den nya sanningen (även när skärmen sedan inte nås).</summary>
+    void ObserveInputs()
+    {
+        foreach (var t in targets.Where(t => t.Active))
+            if (!Settings.IsInputUnreliable(t.DevicePath) && inputs.TryGetValue(t.Id, out var info) && info.Current is uint c)
+                Settings.ObserveInput(t.DevicePath, (byte)c);
+        if (net == null) return;
+        foreach (var p in Placed().Where(p => !PositionMemory.IsClientScreen(p.id)))
         {
-            bool? home = t != null ? Settings.IsHome(t, cc) : Settings.HomeInput(dev) is byte hh ? hh == cc : null;
-            if (home == false)
-            {
-                var mapped = Settings.InputOwner(dev, cc);
-                if (mapped != null) return (mapped, "input");
-                if (reporting.Count == 1)
-                {
-                    // Bara en annan dator sitter på skärmen – då måste det vara den. Kom ihåg ingången.
-                    Settings.SetInputOwner(dev, cc, reporting[0].Id);
-                    return (reporting[0].Id, "input");
-                }
-                return ("other", "input");
-            }
-            if (home == true) return (null, "input");
+            if (Settings.IsInputUnreliable(p.id)) continue;
+            var t = targets.FirstOrDefault(x => x.Id == p.id);
+            if (t is { Active: true } && inputs.TryGetValue(t.Id, out var i2) && i2.Current != null) continue; // här ifrån gäller först
+            foreach (var (_, m) in Seen(p.id, t))
+                if (m.Input is int ci) { Settings.ObserveInput(p.id, (byte)ci); break; }
         }
-        if (t == null) return reporting.Count > 0 ? (reporting[0].Id, "guess") : ("none", "off");
-        if (!t.Active && Smart.ExcludedReason(t.DevicePath) != null && reporting.Count == 1) return (reporting[0].Id, "guess");
-        return (null, t.Active ? "default" : "off");
     }
 
     static string KeyOf(string dev, DisplayTarget? t) => t?.EdidKey is { Length: > 0 } k ? k : PositionMemory.EdidOf(dev) ?? "";
@@ -237,25 +258,39 @@ public sealed partial class AppWindow
     async Task<string?> SetInputRouted(string dev, byte code)
     {
         var t = targets.FirstOrDefault(x => string.Equals(x.DevicePath, dev, StringComparison.OrdinalIgnoreCase));
-        string? directError = null;
-        if (t is { Active: true })
-        {
-            try { await Task.Run(() => Ddc.SetInput(t.GdiName, t.PhysIndex, code)); Commanded(dev, code); return null; }
-            catch (Exception ex) { directError = ex.Message; }
-        }
         var seen = Seen(dev, t);
-        if (seen.Count == 0)
-            return directError ?? "Den här datorn når inte skärmen, och ingen ansluten dator ser den.";
-        string? last = null;
-        // Datorer som kan läsa skärmens ingång når den säkert – prova dem först.
-        foreach (var (s, m) in seen.OrderByDescending(x => x.m.Input != null))
+        // Gå via den dator skärmen visar just nu – dess kabel når skärmen säkert. Visar den en annan
+        // dator och vi skickar härifrån kan skärmen säga "ok" utan att byta (t.ex. VG252Q via DisplayPort).
+        var (owner, _) = ResolveOwner(dev, t);
+        bool viaClientFirst = owner is not (null or "other" or "none") && seen.Any(x => x.s.Id == owner);
+
+        async Task<string?> Direct()
         {
-            // Klientens egen EDID-kod för skärmen (kan skilja sig från vår).
-            var r = await s.SetInput(m.Key, code, TimeSpan.FromSeconds(6));
-            if (r.Ok) { Commanded(dev, code); return null; }
-            last = $"via {s.Name}: {r.Error}";
+            if (t is not { Active: true }) return "den här datorn ser inte skärmen";
+            try { await Task.Run(() => Ddc.SetInput(t.GdiName, t.PhysIndex, code)); return null; }
+            catch (Exception ex) { return ex.Message; }
         }
-        return last;
+        async Task<string?> ViaClients()
+        {
+            if (seen.Count == 0) return "ingen ansluten dator ser skärmen";
+            string? last = null;
+            // Den dator skärmen visar först, sedan de som kan läsa skärmens ingång.
+            foreach (var (s, m) in seen.OrderByDescending(x => x.s.Id == owner).ThenByDescending(x => x.m.Input != null))
+            {
+                var r = await s.SetInput(m.Key, code, TimeSpan.FromSeconds(6)); // klientens egen EDID-kod
+                if (r.Ok) return null;
+                last = $"via {s.Name}: {r.Error}";
+            }
+            return last;
+        }
+
+        var first = viaClientFirst ? await ViaClients() : await Direct();
+        if (first == null) { Commanded(dev, code); return null; }
+        var second = viaClientFirst ? await Direct() : await ViaClients();
+        if (second == null) { Commanded(dev, code); return null; }
+        return t is not { Active: true } && seen.Count == 0
+            ? "Den här datorn når inte skärmen, och ingen ansluten dator ser den."
+            : first;
     }
 
     /// <summary>
@@ -380,7 +415,21 @@ public sealed partial class AppWindow
             clientMonitors = session?.Info?.Monitors.Select(m => new { ident = Ident(m), label = $"{m.Name} ({m.W}×{m.H})" }).ToList(),
             clientMonitor = match == null ? null : Ident(match),
             clientMonitorChosen = session != null && Settings.ClientMonitorFor(dev, session.Id) != null,
+            connections = ConnectionsState(dev, t),
         };
+    }
+
+    /// <summary>Kopplingstabellen för en skärm: vilken ingång varje dator sitter på.</summary>
+    object? ConnectionsState(string dev, DisplayTarget? t)
+    {
+        if (PositionMemory.IsClientScreen(dev) || net == null) return null;
+        List<byte> codes;
+        lock (Smart.KnownCaps) codes = Smart.KnownCaps.TryGetValue(dev, out var k) ? k.Where(c => c is > 0 and < 0x20).ToList() : new List<byte>();
+        if (codes.Count == 0) codes = new List<byte> { 0x0F, 0x10, 0x11, 0x12, 0x1B };
+        var rows = new List<object> { new { computer = "server", name = "Den här datorn", code = InputForComputer(dev, "server") is byte h ? (int?)h : null } };
+        foreach (var c in net.PairedClients())
+            rows.Add(new { computer = c.Id, name = c.Name, code = InputForComputer(dev, c.Id) is byte b ? (int?)b : null });
+        return new { rows, options = codes.Distinct().Select(c => new { code = (int)c, name = Ddc.InputName(c) }).ToList() };
     }
 
     object ComputersOn(string dev, DisplayTarget? t)
@@ -555,26 +604,24 @@ public sealed partial class AppWindow
 
             case "setOwner":
             {
+                // "Visar just nu: X" – du talar om vad skärmen visar. Finns en koppling blir dess ingång
+                // sanningen; annars sparas det som en upplysning tills ingången byts nästa gång.
                 string dev = Str("id");
-                var t = targets.FirstOrDefault(x => x.Id == dev);
                 string owner = Str("owner");
-                Settings.SetMonitorOwner(dev, owner == "auto" ? null : owner);
-                if (t == null) { await PushState(); return (true, null); }
-                // Om användaren väljer en dator för skärmen och vi vet ingången: kom ihåg kopplingen.
-                if (owner != "auto" && owner != "server" && inputs.TryGetValue(t.Id, out var info) && info.Current is uint c
-                    && Settings.IsHome(t, (byte)c) == false)
-                    Settings.SetInputOwner(t.DevicePath, (byte)c, owner);
+                if (owner == "auto") Settings.SetMonitorOwner(dev, null);
+                else if (InputForComputer(dev, owner) is byte code) { Settings.SetMonitorOwner(dev, null); Settings.ObserveInput(dev, code); }
+                else Settings.SetMonitorOwner(dev, owner);
                 await PushState();
                 return (true, null);
             }
 
-            case "setInputOwner":
+            case "setConnection":
             {
+                // Kopplingstabellen: dator X sitter på ingång Y på den här skärmen (code < 0 = ingen/okänd).
                 string dev = Str("id");
-                byte code = (byte)(a?["code"]?.GetValue<int>() ?? 0);
-                string owner = Str("owner");
-                if (owner == "server") Settings.SetHomeInput(dev, code);
-                else Settings.SetInputOwner(dev, code, owner == "" ? null : owner);
+                string computer = Str("computer");
+                int code = a?["code"]?.GetValue<int>() ?? -1;
+                Settings.SetConnection(dev, computer, code < 0 ? null : (byte)code);
                 await PushState();
                 return (true, null);
             }
