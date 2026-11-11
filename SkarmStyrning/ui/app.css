@@ -373,6 +373,7 @@ body.busy .progress { opacity: 1; }
 :root { --client-1: #0ea5a4; --client-2: #14b8a6; --client-3: #22c55e; }
 .mon.owner-client .screen { background: linear-gradient(135deg, #0f9d9a 0%, #14b8a6 50%, #34d399 100%); }
 .mon.owner-other .screen { background: repeating-linear-gradient(135deg, #5d6472 0 10px, #545b68 10px 20px); }
+.glyph.remote div { background: linear-gradient(135deg, #0f9d9a 0%, #14b8a6 50%, #34d399 100%); }
 .mon.controlling { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px #14b8a6, 0 0 28px -4px #14b8a6; }
 .mon .owner-tag {
   position: absolute; left: 6px; right: 6px; bottom: 6px;

@@ -363,6 +363,7 @@ public sealed partial class AppWindow : Form
 
     Task PushState()
     {
+        EnsureClientScreens();
         RebuildRegions();
         if (uiReady) Post(new { type = "state", state = BuildState() });
         return Task.CompletedTask;
@@ -723,7 +724,9 @@ public sealed partial class AppWindow : Form
     /// <summary>Alla skärmar i huvudlayouten + anslutna som inte finns där, med plats och nummer.</summary>
     List<(string id, string name, int x, int y, int w, int h, int number)> Placed()
     {
-        var list = PositionMemory.Items().Select(i => (id: i.Dev, name: i.Name, x: i.X, y: i.Y, w: Math.Max(i.Width, 640), h: Math.Max(i.Height, 360))).ToList();
+        var list = PositionMemory.Items()
+            .Where(i => !sharedClientScreens.Contains(i.Dev)) // en "klientskärm" som visade sig vara en delad skärm
+            .Select(i => (id: i.Dev, name: i.Name, x: i.X, y: i.Y, w: Math.Max(i.Width, 640), h: Math.Max(i.Height, 360))).ToList();
         foreach (var t in targets.Where(t => !list.Any(p => string.Equals(p.id, t.Id, StringComparison.OrdinalIgnoreCase))))
         {
             int right = list.Count > 0 ? list.Max(p => p.x + p.w) : 0;
@@ -744,18 +747,27 @@ public sealed partial class AppWindow : Form
                 int idx = targets.IndexOf(t);
                 cloneOf = targets.Take(idx).FirstOrDefault(o => o.Active && o.GdiName == t.GdiName)?.Id;
             }
+            // En skärm som bara sitter på en annan dator (t.ex. laptopens inbyggda skärm).
+            bool isClientScreen = PositionMemory.IsClientScreen(p.id);
+            string? clientId = isClientScreen ? PositionMemory.ClientOf(p.id) : null;
+            var clientSession = clientId != null ? net?.Session(clientId) : null;
+            string? clientName = clientId == null ? null
+                : clientSession?.Name ?? net?.PairedClients().FirstOrDefault(c => c.Id == clientId)?.Name ?? "Annan dator";
+            bool clientOnline = isClientScreen && Seen(p.id, null).Count > 0;
+            string baseName = string.IsNullOrWhiteSpace(p.name) || p.name == "Skärm" ? "Inbyggd skärm" : p.name;
             return new
             {
                 id = p.id,
-                name = t?.Name ?? (string.IsNullOrWhiteSpace(p.name) ? "Skärm" : p.name),
-                label = t?.Label ?? p.name,
+                name = isClientScreen ? baseName : t?.Name ?? (string.IsNullOrWhiteSpace(p.name) ? "Skärm" : p.name),
+                label = isClientScreen ? $"{clientName} · {baseName}" : t?.Label ?? p.name,
                 connector = t?.Connector,
-                state = t == null ? "disconnected" : t.Active ? "on" : "off",
+                state = isClientScreen ? (clientOnline ? "remote" : "disconnected") : t == null ? "disconnected" : t.Active ? "on" : "off",
+                clientScreen = isClientScreen ? new { client = clientName, online = clientOnline } : null,
                 excluded = t is { Active: false } ? Smart.ExcludedReason(t.DevicePath) : null,
                 number = p.number,
                 windowsNumber = t?.DisplayNumber,
                 layout = new { x = p.x, y = p.y, w = p.w, h = p.h },
-                primary = p.x == 0 && p.y == 0,
+                primary = !isClientScreen && p.x == 0 && p.y == 0,
                 width = t?.HasGeometry == true ? t.Width : p.w,
                 height = t?.HasGeometry == true ? t.Height : p.h,
                 hz = t?.Hz ?? 0,

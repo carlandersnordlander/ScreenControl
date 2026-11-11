@@ -763,7 +763,7 @@ public static class DisplayConfig
     static ProfileLayout SpecFromPaths(PATH_INFO[] paths, MODE_INFO[] modes, List<string> devs, bool dropWorse = false)
     {
         var spec = new ProfileLayout();
-        var known = PositionMemory.Items();
+        var known = PositionMemory.Items().Where(k => !PositionMemory.IsClientScreen(k.Dev)).ToList();
         var firstBySource = new Dictionary<(long, uint), string>();
         for (int i = 0; i < paths.Length && i < devs.Count; i++)
         {

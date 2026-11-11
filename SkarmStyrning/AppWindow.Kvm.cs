@@ -85,6 +85,7 @@ public sealed partial class AppWindow
     /// <param name="t">Skärmen som Windows ser den här (null = den här datorn ser den inte alls just nu).</param>
     (string? owner, string how) ResolveOwner(string dev, DisplayTarget? t)
     {
+        if (PositionMemory.IsClientScreen(dev)) return (PositionMemory.ClientOf(dev), "client-screen");
         var manual = Settings.MonitorOwner(dev);
         if (manual == "server") return t == null ? ("none", "manual") : (null, "manual");
         if (manual != null) return (manual, "manual");
@@ -152,6 +153,14 @@ public sealed partial class AppWindow
     {
         var list = new List<(ClientSession, ClientMonitor)>();
         if (net == null) return list;
+        if (PositionMemory.IsClientScreen(dev))
+        {
+            // En skärm som bara sitter på klienten – den är "sin egen" skärm hos den datorn.
+            var cs = net.Session(PositionMemory.ClientOf(dev)!);
+            var own = cs?.Info?.Monitors.FirstOrDefault(m => dev.EndsWith(":" + Ident(m), StringComparison.Ordinal));
+            if (cs != null && own != null) list.Add((cs, own));
+            return list;
+        }
         string key = KeyOf(dev, t), name = NameOfMonitor(dev, t);
         foreach (var s in net.Sessions())
         {
@@ -252,6 +261,33 @@ public sealed partial class AppWindow
             if (errors.Count > 0) throw new InvalidOperationException(msg + "\nKunde inte byta: " + string.Join("; ", errors));
             return msg;
         });
+    }
+
+    /// <summary>Klientskärmar i minnet som i själva verket är en delad skärm (döljs i layouten).</summary>
+    readonly HashSet<string> sharedClientScreens = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Skärmar som bara sitter på en ansluten dator (t.ex. laptopens inbyggda skärm) får en plats i
+    /// layouten, så att man kan placera dem och dra pekaren dit.
+    /// </summary>
+    void EnsureClientScreens()
+    {
+        if (net == null || targets.Count == 0) return;
+        var matched = new HashSet<string>(StringComparer.Ordinal);
+        var realDevs = PositionMemory.Items().Select(i => i.Dev).Where(d => !PositionMemory.IsClientScreen(d))
+            .Concat(targets.Select(t => t.Id)).Distinct(StringComparer.OrdinalIgnoreCase);
+        foreach (var dev in realDevs)
+            foreach (var (s, m) in Seen(dev, targets.FirstOrDefault(x => string.Equals(x.Id, dev, StringComparison.OrdinalIgnoreCase))))
+                matched.Add(PositionMemory.ClientScreenId(s.Id, Ident(m)));
+
+        sharedClientScreens.Clear();
+        foreach (var id in matched) sharedClientScreens.Add(id);
+        foreach (var s in net.Sessions())
+            foreach (var m in s.Info?.Monitors ?? new())
+            {
+                var id = PositionMemory.ClientScreenId(s.Id, Ident(m));
+                if (!matched.Contains(id)) PositionMemory.EnsureClientScreen(id, m.Name, m.W, m.H);
+            }
     }
 
     /// <summary>Bygger den gemensamma ytan som kroken använder.</summary>

@@ -38,7 +38,7 @@ public sealed partial class AppWindow
     {
         var p = profiles.FirstOrDefault(x => x.Name == name) ?? throw new InvalidOperationException("Profilen finns inte.");
         var spec = p.Spec ?? (p.Layout != null ? DisplayConfig.SpecFromSnapshot(p.Layout) : null);
-        var monitors = Placed().Select(x =>
+        var monitors = Placed().Where(x => !PositionMemory.IsClientScreen(x.id)).Select(x =>
         {
             var t = targets.FirstOrDefault(t => t.Id == x.id);
             var pm = spec?.Monitors.FirstOrDefault(m => string.Equals(m.Dev, x.id, StringComparison.OrdinalIgnoreCase));

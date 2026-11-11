@@ -266,6 +266,33 @@ public static class PositionMemory
         lock (Gate) return Data.TryGetValue(dev, out var d) ? d.EdidKey : null;
     }
 
+    /// <summary>Id för en skärm som bara sitter på en annan dator (t.ex. laptopens inbyggda skärm).</summary>
+    public static string ClientScreenId(string clientId, string ident) => $"client:{clientId}:{ident}";
+    public static bool IsClientScreen(string dev) => dev.StartsWith("client:", StringComparison.Ordinal);
+    public static string? ClientOf(string dev) => IsClientScreen(dev) ? dev.Split(':')[1] : null;
+
+    /// <summary>
+    /// Ser till att en skärm som bara finns på en annan dator har en plats i layouten. Ny skärm hamnar
+    /// till höger om de andra; användaren drar den sedan dit den står.
+    /// </summary>
+    public static void EnsureClientScreen(string dev, string name, int width, int height)
+    {
+        lock (Gate)
+        {
+            if (Data.TryGetValue(dev, out var d))
+            {
+                if (d.Width == width && d.Height == height && d.Name == name) return;
+                (d.Width, d.Height, d.Name) = (width, height, name);
+                Save();
+                return;
+            }
+            int right = Data.Count > 0 ? Data.Values.Max(v => v.X + Math.Max(v.Width, 640)) : 0;
+            int top = Data.Count > 0 ? Data.Values.Min(v => v.Y) : 0;
+            Data[dev] = new SavedDisplay { Name = name, X = right, Y = top, Width = width, Height = height };
+            Save();
+        }
+    }
+
     public static void Forget(string dev)
     {
         lock (Gate) { if (Data.Remove(dev)) Save(); }

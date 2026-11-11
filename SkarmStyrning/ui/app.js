@@ -60,7 +60,8 @@ const PORT = {
 /* ================= Hjälpfunktioner ================= */
 const monitors = () => state.monitors || [];
 const byId = id => monitors().find(m => m.id === id);
-const connected = () => monitors().filter(m => m.state !== 'disconnected');
+// Den här datorns skärmar (inte skärmar som bara sitter på en annan dator).
+const connected = () => monitors().filter(m => m.state !== 'disconnected' && !m.clientScreen);
 const shortInput = n => String(n || '').replace('DisplayPort', 'DP');
 const posOf = m => draft[m.id] || { x: m.layout.x, y: m.layout.y };
 const isPrimary = m => draftPrimary ? draftPrimary === m.id : m.primary;
@@ -244,7 +245,7 @@ function renderModes() {
   const mode = activeMode();
   for (const t of document.querySelectorAll('.mode-tile')) t.classList.toggle('active', t.dataset.mode === mode);
   const sel = byId(selectedId);
-  const target = sel && sel.state !== 'disconnected' ? sel : null;
+  const target = sel && sel.state !== 'disconnected' && !sel.clientScreen ? sel : null;
   const onlyOn = connected().filter(m => m.state === 'on');
   $('#onlyDesc').textContent = target ? `Visa bara ${target.label}`
     : mode === 'only' && onlyOn[0] ? `Just nu: ${onlyOn[0].label}` : 'Välj en skärm ovan';
@@ -309,6 +310,7 @@ function renderInspector() {
   const mode = modeOf(m);
   const conn = connected();
   const stateChip = m.state === 'on' ? '<span class="chip on"><span class="dot"></span>På</span>'
+    : m.state === 'remote' ? `<span class="chip on">${ICON.laptop}${esc(m.clientScreen?.client || '')}</span>`
     : m.state === 'off' ? '<span class="chip"><span class="dot"></span>Av</span>'
     : '<span class="chip">Inte ansluten</span>';
   const chips = [stateChip];
@@ -326,6 +328,32 @@ function renderInspector() {
       </div>
       <div class="chips">${chips.join('')}</div>
     </div>`;
+
+  if (m.clientScreen) {
+    // En skärm som bara sitter på en annan dator, t.ex. laptopens inbyggda skärm.
+    const cs = m.clientScreen;
+    html += `
+      <div class="section">
+        <div class="owner-card client">
+          <span class="owner-icon">${ICON.laptop}</span>
+          <div><div class="owner-name">${esc(cs.client)}s skärm</div>
+          <div class="owner-sub">${cs.online
+            ? (m.owner?.reachable ? 'Dra pekaren över kanten hit – mus och tangentbord följer med.' : 'Ansluten.')
+            : `${esc(cs.client)} är inte ansluten just nu.`}</div></div>
+        </div>
+        <div class="notice info" style="margin-top:12px">${ICON.info}<div>Den här skärmen sitter bara på <b>${esc(cs.client)}</b>.
+          Dra den i layouten dit den står bredvid dina andra skärmar, så går pekaren över kanten dit.
+          Upplösning och ingång styrs på ${esc(cs.client)}.</div></div>
+        ${cs.online ? '' : `<div class="row-actions"><button class="btn danger" data-act="forget">${ICON.trash}Glöm skärmen</button></div>`}
+      </div>
+      <div class="section"><h4>Detaljer</h4><dl class="details">
+        <dt>Dator</dt><dd>${esc(cs.client)}</dd>
+        <dt>Upplösning</dt><dd>${m.width}×${m.height}</dd>
+        <dt>Position</dt><dd>${posOf(m).x}, ${posOf(m).y}</dd>
+      </dl></div>`;
+    box.innerHTML = html;
+    return;
+  }
 
   if (m.state === 'disconnected') {
     // Visar skärmen en annan dator kan ingången ändå bytas – via den datorn.
@@ -1043,7 +1071,13 @@ function renderTop() {
   const on = conn.filter(m => m.state === 'on').length;
   const sub = $('#subtitle');
   if (state.busy) sub.innerHTML = `<span class="spinner"></span>${esc(state.busy)} …`;
-  else sub.textContent = ms.length ? `${conn.length} anslutna · ${on} på${ms.length > conn.length ? ` · ${ms.length - conn.length} sparade` : ''}` : 'Läser in skärmar …';
+  else {
+    const remote = ms.filter(m => m.state === 'remote').length;
+    const saved = ms.filter(m => m.state === 'disconnected').length;
+    sub.textContent = ms.length
+      ? `${conn.length} anslutna · ${on} på${remote ? ` · ${remote} på andra datorer` : ''}${saved ? ` · ${saved} sparade` : ''}`
+      : 'Läser in skärmar …';
+  }
 
   const rp = $('#remotePill');
   rp.hidden = !state.remote;
