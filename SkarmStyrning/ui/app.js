@@ -934,8 +934,10 @@ function openSettings() {
     <div class="group">
       <h4>Andra datorer</h4>
       <div class="toggle-row"><div><strong>Dela mus och tangentbord</strong><span>Pekaren går över till skärmar som visar en annan dator</span></div><label class="switch"><input type="checkbox" id="sShare" ${s.shareInput ? 'checked' : ''}><i></i></label></div>
+      <div class="toggle-row"><div><strong>Dela urklipp</strong><span>Kopiera text på en dator och klistra in på den andra</span></div><label class="switch"><input type="checkbox" id="sClip" ${s.shareClipboard ? 'checked' : ''}><i></i></label></div>
       <div class="about"><ul>
         <li><b>Ctrl+Shift+Alt</b> + valfri tangent tar alltid tillbaka musen.</li>
+        <li>Urklipp delas krypterat så fort du kopierar text, med alla anslutna datorer. Stäng av ovan om du kopierar sådant som inte ska lämna datorn.</li>
         <li>Klienter ansluter till port <b>${state.net?.port ?? 47811}</b> på ${esc((state.net?.addresses || []).join(', ') || 'den här datorn')}.</li>
         <li>Fungerar det inte via VPN? Tryck <b>Testa</b> i klienten – den säger om nätverket blockeras.</li>
       </ul></div>
@@ -966,6 +968,7 @@ function openSettings() {
     root => {
       $('#sAuto', root).onchange = e => call('setAuto', { value: e.target.checked }).catch(() => {});
       $('#sShare', root).onchange = e => call('setShareInput', { value: e.target.checked }).catch(() => {});
+      $('#sClip', root).onchange = e => call('setShareClipboard', { value: e.target.checked }).catch(() => {});
       $('#sTheme', root).onclick = e => {
         const b = e.target.closest('button'); if (!b) return;
         for (const x of root.querySelectorAll('#sTheme button')) x.className = x === b ? 'active accent' : '';

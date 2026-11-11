@@ -146,6 +146,7 @@ sealed class ClientLink : IDisposable
             {
                 channel?.Dispose();
                 channel = null;
+                shareClipboard = false;
                 if (controlled) { controlled = false; Injector.ReleaseAll(); }
             }
             try { await Task.Delay(5000, ct); } catch { return; }
@@ -153,6 +154,18 @@ sealed class ClientLink : IDisposable
     }
 
     int pings;
+    volatile bool shareClipboard;
+
+    /// <summary>Text som kopierats på servern.</summary>
+    public event Action<string>? ClipboardReceived;
+
+    /// <summary>Skicka text som kopierats här – bara om servern har delat urklipp påslaget.</summary>
+    public async Task SendClipboard(string text)
+    {
+        var ch = channel;
+        if (ch == null || !shareClipboard) return;
+        try { await ch.Send(MsgType.Clipboard, System.Text.Encoding.UTF8.GetBytes(text)); } catch { }
+    }
 
     async Task Receive(SecureChannel ch, CancellationToken ct)
     {
@@ -197,6 +210,12 @@ sealed class ClientLink : IDisposable
                     break;
                 case MsgType.SetInput:
                     _ = HandleSetInput(ch, Proto.FromJson<SetInputMsg>(p), ct);
+                    break;
+                case MsgType.ClipboardPolicy:
+                    shareClipboard = p.Length > 0 && p[0] == 1;
+                    break;
+                case MsgType.Clipboard:
+                    if (shareClipboard) ClipboardReceived?.Invoke(System.Text.Encoding.UTF8.GetString(p));
                     break;
             }
         }

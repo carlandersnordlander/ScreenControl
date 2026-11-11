@@ -83,6 +83,10 @@ public sealed class NetServer : IDisposable
     public event Action<string>? Paired;
     /// <summary>En session försvann – kroken måste släppa den.</summary>
     public event Action<string>? Disconnected;
+    /// <summary>En dator har anslutit (bakgrundstråd).</summary>
+    public event Action<ClientSession>? SessionStarted;
+    /// <summary>Text som kopierats på en ansluten dator (bakgrundstråd).</summary>
+    public event Action<ClientSession, string>? ClipboardReceived;
 
     public NetServer()
     {
@@ -282,6 +286,7 @@ public sealed class NetServer : IDisposable
 
             var writer = Task.Run(() => Writer(session));
             var pinger = Task.Run(() => Pinger(session));
+            SessionStarted?.Invoke(session);
             while (true)
             {
                 var (type, p) = await ch.Receive(cts.Token);
@@ -293,6 +298,10 @@ public sealed class NetServer : IDisposable
                 else if (type == MsgType.InputResult)
                 {
                     session.Complete(Proto.FromJson<InputResultMsg>(p));
+                }
+                else if (type == MsgType.Clipboard)
+                {
+                    ClipboardReceived?.Invoke(session, Encoding.UTF8.GetString(p));
                 }
             }
         }

@@ -72,6 +72,8 @@ Många jobb-VPN:er stänger av åtkomsten till det lokala nätverket. Tryck **Te
 - När pekaren går över kanten till en skärm som visar jobbdatorn fångar huvudappen mus och
   tangentbord och skickar dem krypterat (ECDH P-256 + AES-GCM) till klienten.
 - **Ctrl+Shift+Alt + valfri tangent** tar alltid tillbaka musen.
+- **Delat urklipp:** text du kopierar på en dator finns direkt att klistra in på de andra (krypterat).
+  Stäng av under *Inställningar → Andra datorer → Dela urklipp*; då skickar klienten ingenting.
 - Byt ingång med en profil så följer delningen automatiskt med.
 
 Begränsningar: Ctrl+Alt+Del går inte att skicka, och klienten kan inte styra fönster som körs som

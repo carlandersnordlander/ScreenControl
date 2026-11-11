@@ -34,6 +34,8 @@ public enum MsgType : byte
     ReleaseAll = 26,  // släpp alla nedtryckta tangenter/knappar
     SetInput = 27,    // server → klient: byt ingång på en skärm (JSON SetInputMsg)
     InputResult = 28, // klient → server: svar (JSON InputResultMsg)
+    Clipboard = 40,   // båda hållen: urklippets text (UTF-8)
+    ClipboardPolicy = 41, // server → klient: 1 = dela urklipp, 0 = dela inte
     Ping = 30,
     Pong = 31,
 }

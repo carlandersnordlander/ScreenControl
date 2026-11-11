@@ -16,6 +16,7 @@ sealed class ClientForm : Form
     readonly Label pairedInfo = new() { AutoSize = true, MaximumSize = new Size(420, 0) };
     readonly CheckBox autostart = new() { Text = "Starta automatiskt när jag loggar in", AutoSize = true };
     bool reallyClose;
+    readonly Net.ClipboardWatcher clipboard;
 
     static readonly Color Accent = Color.FromArgb(47, 107, 255);
 
@@ -100,6 +101,11 @@ sealed class ClientForm : Form
         address.Text = link.Config.ServerAddress ?? "";
         link.StatusChanged += (text, connected, controlled) => BeginInvoke(() => SetStatus(text, connected, controlled));
 
+        // Delat urklipp: kopiera här → klistra in på den andra datorn, och tvärtom.
+        clipboard = new Net.ClipboardWatcher();
+        clipboard.TextChanged += t => _ = link.SendClipboard(t);
+        link.ClipboardReceived += t => BeginInvoke(() => clipboard.SetText(t));
+
         var menu = new ContextMenuStrip();
         menu.Items.Add("Öppna", null, (_, _) => ShowWindow());
         menu.Items.Add("Avsluta", null, (_, _) => { reallyClose = true; Close(); });
@@ -115,7 +121,7 @@ sealed class ClientForm : Form
                 tray.ShowBalloonTip(2500, "Skärmstyrning klient", "Körs vidare i systemfältet.", ToolTipIcon.Info);
             }
         };
-        FormClosed += (_, _) => { link.Dispose(); tray.Dispose(); };
+        FormClosed += (_, _) => { link.Dispose(); tray.Dispose(); clipboard.Dispose(); };
 
         UpdatePaired();
         SetStatus(link.Config.IsPaired ? "Ansluter …" : "Inte parkopplad", false, false);

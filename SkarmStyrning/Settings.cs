@@ -20,6 +20,8 @@ public sealed class AppSettings
     public string? LastProfile { get; set; }
     /// <summary>Dela mus och tangentbord med anslutna datorer.</summary>
     public bool ShareInput { get; set; } = true;
+    /// <summary>Dela urklipp (text) med anslutna datorer.</summary>
+    public bool ShareClipboard { get; set; } = true;
     /// <summary>Skärm → "server" eller klient-id (saknas = automatiskt).</summary>
     public Dictionary<string, string> MonitorOwners { get; set; } = new();
     /// <summary>Skärm → ingångskod (hex) → klient-id: vilken dator som sitter på vilken ingång.</summary>
@@ -90,6 +92,12 @@ public static class Settings
     {
         get { lock (Gate) return S.ShareInput; }
         set { lock (Gate) { S.ShareInput = value; Save(); } }
+    }
+
+    public static bool ShareClipboard
+    {
+        get { lock (Gate) return S.ShareClipboard; }
+        set { lock (Gate) { S.ShareClipboard = value; Save(); } }
     }
 
     public static string? MonitorOwner(string dev)

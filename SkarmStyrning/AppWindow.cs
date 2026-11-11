@@ -787,6 +787,7 @@ public sealed partial class AppWindow : Form
                 theme = Settings.Theme,
                 hotkeys = new { next = HotkeyState(Settings.HotkeyNextProfile), extend = HotkeyState(Settings.HotkeyExtend), home = HotkeyState(Settings.HotkeyHome) },
                 shareInput = Settings.ShareInput,
+                shareClipboard = Settings.ShareClipboard,
             },
             computers = ComputersState(),
             net = NetState(),

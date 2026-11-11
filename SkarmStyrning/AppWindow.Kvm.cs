@@ -38,11 +38,38 @@ public sealed partial class AppWindow
 
         // Profiler byter ingång via klienten när den här datorn inte når skärmen.
         Actions.SetInputAnyRoute = (dev, code) => SetInputRouted(dev, code).GetAwaiter().GetResult();
+
+        // Delat urklipp: kopiera här → finns på de andra datorerna, och tvärtom.
+        clipboard = new Net.ClipboardWatcher();
+        clipboard.TextChanged += text =>
+        {
+            if (!Settings.ShareClipboard) return;
+            var bytes = System.Text.Encoding.UTF8.GetBytes(text);
+            foreach (var s in net.Sessions()) s.Post(Net.MsgType.Clipboard, bytes);
+        };
+        net.SessionStarted += s => s.Post(Net.MsgType.ClipboardPolicy, new[] { (byte)(Settings.ShareClipboard ? 1 : 0) });
+        net.ClipboardReceived += (from, text) => BeginInvoke(() =>
+        {
+            if (!Settings.ShareClipboard) return;
+            clipboard.SetText(text);
+            // Vidare till övriga anslutna datorer.
+            var bytes = System.Text.Encoding.UTF8.GetBytes(text);
+            foreach (var s in net.Sessions().Where(s => s.Id != from.Id)) s.Post(Net.MsgType.Clipboard, bytes);
+        });
+    }
+
+    Net.ClipboardWatcher? clipboard;
+
+    void BroadcastClipboardPolicy()
+    {
+        if (net == null) return;
+        foreach (var s in net.Sessions()) s.Post(Net.MsgType.ClipboardPolicy, new[] { (byte)(Settings.ShareClipboard ? 1 : 0) });
     }
 
     void StopKvm()
     {
         router?.Dispose();
+        clipboard?.Dispose();
         net?.Dispose();
     }
 
@@ -427,6 +454,12 @@ public sealed partial class AppWindow
 
             case "allowFirewall":
                 await AllowInFirewall();
+                return (true, null);
+
+            case "setShareClipboard":
+                Settings.ShareClipboard = a?["value"]?.GetValue<bool>() ?? true;
+                BroadcastClipboardPolicy();
+                await PushState();
                 return (true, null);
 
             case "setShareInput":
