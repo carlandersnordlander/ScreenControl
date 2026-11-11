@@ -15,6 +15,12 @@ sealed class ClientConfig
     public string? ServerId { get; set; }
     public string? ServerName { get; set; }
     public string? KeyProtected { get; set; }
+    /// <summary>Stäng av högtalarna här medan ljudet spelas på servern.</summary>
+    public bool MuteLocal { get; set; } = true;
+    /// <summary>Utgång som klienten själv stängt av (återställs vid nästa start om klienten kraschat).</summary>
+    public string? MutedDeviceId { get; set; }
+    /// <summary>Utgångar där avstängt ljud också tystar fångsten – dem stängs inte av.</summary>
+    public List<string> NoMuteDevices { get; set; } = new();
 
     static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SkarmStyrningKlient");
     static readonly string FilePath = Path.Combine(Dir, "klient.json");
@@ -61,6 +67,7 @@ sealed class ClientLink : IDisposable
 
     public void Start()
     {
+        AudioSender.RestoreAfterCrash(Config); // slå på högtalarna om klienten kraschade medan de var avstängda
         Stop();
         cts = new CancellationTokenSource();
         var token = cts.Token;
@@ -161,8 +168,8 @@ sealed class ClientLink : IDisposable
     IPAddress? serverIp;
     AudioSender? audio;
 
-    /// <summary>Ljudet som skickas till servern (null innan första anslutningen).</summary>
-    public AudioSender? Audio => audio;
+    /// <summary>Ljudet som skickas till servern.</summary>
+    public AudioSender Audio => EnsureAudio();
     public event Action? AudioChanged;
 
     AudioSender EnsureAudio()
@@ -172,7 +179,7 @@ sealed class ClientLink : IDisposable
         {
             var ch = channel;
             if (ch != null) try { await ch.Send(type, payload); } catch { }
-        });
+        }, Config);
         audio.StatusChanged += () =>
         {
             AudioChanged?.Invoke();

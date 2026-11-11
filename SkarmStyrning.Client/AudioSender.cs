@@ -46,7 +46,103 @@ sealed class AudioSender : IDisposable
     public string Transport => useTcp ? "tcp" : "udp";
     public event Action? StatusChanged;
 
-    public AudioSender(Func<MsgType, byte[], Task> sendTcp) => this.sendTcp = sendTcp;
+    // Tysta högtalarna här medan ljudet spelas på servern.
+    readonly ClientConfig config;
+    MMDevice? device;
+    bool mutedByUs;
+    DateTime mutedAt, lastSoundBeforeMute = DateTime.MinValue;
+    bool sawSoundAfterMute;
+    /// <summary>"muted" = högtalarna här är avstängda, "unsupported" = går inte på den här utgången, null = av.</summary>
+    public string? LocalMute { get; private set; }
+
+    public AudioSender(Func<MsgType, byte[], Task> sendTcp, ClientConfig config)
+    {
+        this.sendTcp = sendTcp;
+        this.config = config;
+    }
+
+    /// <summary>Har klienten kraschat medan högtalarna var avstängda? Slå på dem igen.</summary>
+    public static void RestoreAfterCrash(ClientConfig config)
+    {
+        if (config.MutedDeviceId == null) return;
+        try
+        {
+            using var en = new MMDeviceEnumerator();
+            var d = en.GetDevice(config.MutedDeviceId);
+            if (d.AudioEndpointVolume.Mute) d.AudioEndpointVolume.Mute = false;
+        }
+        catch { }
+        config.MutedDeviceId = null;
+        config.Save();
+    }
+
+    /// <summary>Slå på/av funktionen medan klienten kör.</summary>
+    public void SetMuteLocal(bool on)
+    {
+        config.MuteLocal = on;
+        config.Save();
+        lock (gate)
+        {
+            if (on && capture != null) MuteHere();
+            else if (!on) UnmuteHere();
+        }
+        StatusChanged?.Invoke();
+    }
+
+    void MuteHere()
+    {
+        if (device == null || !config.MuteLocal) return;
+        if (config.NoMuteDevices.Contains(device.ID)) { LocalMute = "unsupported"; return; }
+        try
+        {
+            var vol = device.AudioEndpointVolume;
+            if (vol.Mute) { LocalMute = mutedByUs ? "muted" : null; return; } // redan avstängt av användaren – rör inte
+            vol.Mute = true;
+            mutedByUs = true;
+            mutedAt = DateTime.UtcNow;
+            sawSoundAfterMute = false;
+            config.MutedDeviceId = device.ID;
+            config.Save();
+            LocalMute = "muted";
+        }
+        catch { LocalMute = null; }
+    }
+
+    void UnmuteHere()
+    {
+        if (!mutedByUs || device == null) { LocalMute = null; return; }
+        try { if (device.AudioEndpointVolume.Mute) device.AudioEndpointVolume.Mute = false; } catch { }
+        mutedByUs = false;
+        config.MutedDeviceId = null;
+        config.Save();
+        LocalMute = null;
+    }
+
+    DateTime lastMeterCheck;
+    int silentWhilePlaying;
+
+    /// <summary>
+    /// På vissa ljudkort tystar avstängt ljud även fångsten. Windows ljudmätare visar ljud även när
+    /// högtalarna är avstängda – spelas något upp men fångsten får bara digital tystnad, slås
+    /// högtalarna på igen och utgången kommer ihåg att det inte går där.
+    /// </summary>
+    void CheckMuteSideEffect(bool frameSilent)
+    {
+        if (!mutedByUs || device == null || sawSoundAfterMute) return;
+        if (!frameSilent) { sawSoundAfterMute = true; return; } // fångsten fungerar trots avstängt ljud
+        var now = DateTime.UtcNow;
+        if (now - lastMeterCheck < TimeSpan.FromMilliseconds(200)) return;
+        lastMeterCheck = now;
+        float peak;
+        try { peak = device.AudioMeterInformation.MasterPeakValue; } catch { return; }
+        if (peak <= 0.01f) { silentWhilePlaying = 0; return; }
+        if (++silentWhilePlaying < 4) return; // ~0,8 s med ljud i Windows men tystnad i fångsten
+        UnmuteHere();
+        if (!config.NoMuteDevices.Contains(device.ID)) config.NoMuteDevices.Add(device.ID);
+        config.Save();
+        LocalMute = "unsupported";
+        StatusChanged?.Invoke();
+    }
 
     /// <summary>Börja skicka till servern med inställningarna den gav oss.</summary>
     public void Start(AudioConfigMsg config, IPAddress serverAddress)
@@ -100,13 +196,14 @@ sealed class AudioSender : IDisposable
         {
             try
             {
-                using var en = new MMDeviceEnumerator();
-                var device = en.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                var en = new MMDeviceEnumerator();
+                var dev = en.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
                 lock (gate)
                 {
-                    deviceId = device.ID;
-                    DeviceName = device.FriendlyName;
-                    capture = new LowLatencyLoopback(device);
+                    device = dev;
+                    deviceId = dev.ID;
+                    DeviceName = dev.FriendlyName;
+                    capture = new LowLatencyLoopback(dev);
                     var f = capture.WaveFormat;
                     sourceRate = f.SampleRate;
                     sourceChannels = f.Channels;
@@ -117,6 +214,7 @@ sealed class AudioSender : IDisposable
                     pending.Clear();
                     capture.DataAvailable += OnData;
                     capture.StartRecording();
+                    MuteHere(); // ljudet ska höras på servern – inte här också
                 }
                 StatusChanged?.Invoke();
             }
@@ -130,7 +228,11 @@ sealed class AudioSender : IDisposable
     void StopCapture()
     {
         WasapiCapture? c;
-        lock (gate) { c = capture; capture = null; }
+        lock (gate)
+        {
+            c = capture; capture = null;
+            UnmuteHere(); // högtalarna här tillbaka
+        }
         if (c == null) return;
         try { c.DataAvailable -= OnData; c.StopRecording(); c.Dispose(); } catch { }
     }
@@ -194,7 +296,8 @@ sealed class AudioSender : IDisposable
         bool silent = true;
         foreach (var v in frame) if (Math.Abs(v) > 1e-5f) { silent = false; break; }
         var now = DateTime.UtcNow;
-        if (!silent) lastSound = now;
+        if (!silent) { lastSound = now; if (!mutedByUs) lastSoundBeforeMute = now; }
+        CheckMuteSideEffect(silent);
         // Efter en stunds tystnad skickas ingenting (sparar nätverk); ljud skickas direkt igen.
         bool shouldSend = now - lastSound < TimeSpan.FromMilliseconds(300);
         if (!shouldSend)

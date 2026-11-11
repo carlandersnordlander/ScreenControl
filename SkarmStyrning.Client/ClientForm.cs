@@ -18,6 +18,8 @@ sealed class ClientForm : Form
     bool reallyClose;
     readonly Net.ClipboardWatcher clipboard;
     readonly Label audioStatus = new() { AutoSize = true, MaximumSize = new Size(440, 0), Text = "Ljud: skickas inte (inte ansluten)." };
+    readonly CheckBox muteLocal = new() { Text = "Stäng av högtalarna här medan ljudet spelas på den andra datorn", AutoSize = true, Margin = new Padding(0, 6, 0, 0) };
+    readonly Label muteHint = new() { AutoSize = true, MaximumSize = new Size(440, 0), ForeColor = Color.DimGray, Margin = new Padding(18, 2, 0, 6) };
 
     static readonly Color Accent = Color.FromArgb(47, 107, 255);
 
@@ -90,12 +92,10 @@ sealed class ClientForm : Form
 
         root.Controls.Add(Heading("Ljud"));
         root.Controls.Add(audioStatus);
-        root.Controls.Add(new Label
-        {
-            Text = "Allt som spelas upp här skickas till den andra datorns högtalare. Vill du inte höra det här också: " +
-                   "välj en ljudutgång utan högtalare (t.ex. en skärm via HDMI) som standard i Windows.",
-            AutoSize = true, MaximumSize = new Size(440, 0), ForeColor = Color.DimGray, Margin = new Padding(0, 4, 0, 6),
-        });
+        muteLocal.Checked = link.Config.MuteLocal;
+        muteLocal.CheckedChanged += (_, _) => link.Audio.SetMuteLocal(muteLocal.Checked);
+        root.Controls.Add(muteLocal);
+        root.Controls.Add(muteHint);
 
         root.Controls.Add(pairedInfo);
         var row3 = Row();
@@ -182,7 +182,14 @@ sealed class ClientForm : Form
     void UpdateAudio()
     {
         var a = link.Audio;
-        if (a == null || a.DeviceName == null) { audioStatus.Text = "Ljud: skickas inte."; return; }
+        muteHint.Text = a.LocalMute switch
+        {
+            "muted" => "Högtalarna här är avstängda – de slås på igen när du kopplar ner.",
+            "unsupported" => "Ljudkortet tystar även ljudet som skickas när det stängs av, så det går inte här. " +
+                             "Välj i stället en ljudutgång utan högtalare (t.ex. en skärm via HDMI) som standard i Windows.",
+            _ => muteLocal.Checked ? "Slås av när ljud börjar skickas." : "Ljudet hörs både här och på den andra datorn.",
+        };
+        if (a.DeviceName == null) { audioStatus.Text = "Ljud: skickas inte."; return; }
         audioStatus.Text = a.Sending
             ? $"🔊 Ljud skickas till {link.Config.ServerName} ({a.Transport.ToUpperInvariant()}) – från {a.DeviceName}"
             : $"Ljud: redo – skickar när något spelas upp på {a.DeviceName}";
