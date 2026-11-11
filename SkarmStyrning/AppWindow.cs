@@ -811,13 +811,18 @@ public sealed partial class AppWindow : Form
         if (!inputs.TryGetValue(t.Id, out var info)) return new { loading = true };
         // Den här datorn får inget svar (skärmen visar troligen en annan dator) – visa klientens bild.
         if (info.Current == null && via is { } v2) return ClientInputState(dev, v2);
+        // Skärmar som inte rapporterar rätt ingång: lita på senaste bytet i stället för skärmens svar.
+        byte? effective = Settings.EffectiveInput(dev, info.Current is uint raw ? (byte)raw : null);
+        bool assumed = effective != null && info.Current != effective;
         var codes = info.Supported.Count > 0 ? info.Supported.ToList() : Ddc.CommonInputs.ToList();
-        if (info.Current is uint c && !codes.Contains((byte)c)) codes.Insert(0, (byte)c);
-        bool? isHome = info.Current is uint cc ? Settings.IsHome(t, (byte)cc) : null;
+        if (effective is byte c && !codes.Contains(c)) codes.Insert(0, c);
+        bool? isHome = effective is byte cc ? Settings.IsHome(t, cc) : null;
         return new
         {
             loading = false,
-            current = info.Current,
+            current = effective is byte e ? (uint?)e : null,
+            assumed,
+            unreliable = Settings.IsInputUnreliable(dev),
             error = info.Error,
             fromMonitor = info.CapsFromMonitor,
             home = Settings.HomeInput(t.DevicePath),

@@ -366,6 +366,8 @@ function renderInspector() {
       : ow.reachable ? 'Dra pekaren över kanten – mus och tangentbord följer med.'
       : ow.connected ? 'Ansluten, men klienten rapporterar inte den här skärmen.' : 'Inte ansluten just nu.';
     const opts = [['auto', 'Automatiskt (efter ingång)'], ['server', 'Den här datorn'], ...state.computers.map(c => [c.id, c.name])];
+    const manualNote = ow.manual && ow.manual !== 'auto'
+      ? `<div class="hint"><span>Du har angett vad skärmen visar. Det gäller tills ingången byts nästa gång.</span></div>` : '';
     html += `
       <div class="section">
         <h4>Dator på skärmen</h4>
@@ -374,8 +376,9 @@ function renderInspector() {
           <div><div class="owner-name">${esc(ow.name)}</div><div class="owner-sub">${esc(sub)}</div></div>
         </div>
         <select class="select" id="ownerSel" title="Vilken dator skärmen visar">
-          ${opts.map(([v, l]) => `<option value="${esc(v)}" ${(ow.manual || 'auto') === v ? 'selected' : ''}>${v === 'auto' ? '' : 'Visar: '}${esc(l)}</option>`).join('')}
+          ${opts.map(([v, l]) => `<option value="${esc(v)}" ${(ow.manual || 'auto') === v ? 'selected' : ''}>${v === 'auto' ? '' : 'Visar just nu: '}${esc(l)}</option>`).join('')}
         </select>
+        ${manualNote}
         ${(m.computers || []).length > 1 ? `<div class="on-list">Ansluten till: ${m.computers.map(c => `<span class="chip">${c.id ? ICON.laptop : ICON.monitor}${esc(c.name)}${c.input ? ' · ' + esc(c.input) : ''}</span>`).join('')}</div>` : ''}
       </div>`;
   }
@@ -400,6 +403,8 @@ function inputSection(m) {
   } else {
     if (pickingHome) html += `<div class="notice info" style="margin-bottom:10px">${ICON.home}<div>Klicka på den ingång som <b>den här datorn</b> sitter på.</div></div>`;
     if (inp.via) html += `<div class="notice info via" style="margin-bottom:10px">${ICON.laptop}<div>Skärmen visar <b>${esc(inp.via)}</b>. Byten skickas via den datorn, eftersom den här datorn inte når skärmen just nu.</div></div>`;
+    else if (inp.unreliable) html += `<div class="notice info" style="margin-bottom:10px">${ICON.info}<div>Den här skärmen rapporterar inte vilken ingång den visar${inp.assumed ? ' (den svarar alltid med sin egen port)' : ''}.
+      Appen utgår från <b>senaste bytet</b>. Har du bytt med skärmens egna knappar – klicka på ingången den visar så stämmer det igen.</div></div>`;
     else if (inp.error) html += `<div class="notice" style="margin-bottom:10px">${ICON.warn}<div>${esc(inp.error)}. Du kan ändå prova att byta – vissa skärmar tar emot kommandon men svarar inte.</div></div>`;
     html += '<div class="inputs">';
     for (const o of inp.options || []) {

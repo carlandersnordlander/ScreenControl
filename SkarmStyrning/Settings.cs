@@ -26,6 +26,11 @@ public sealed class AppSettings
     public Dictionary<string, string> MonitorOwners { get; set; } = new();
     /// <summary>Skärm → ingångskod (hex) → klient-id: vilken dator som sitter på vilken ingång.</summary>
     public Dictionary<string, Dictionary<string, string>> InputOwners { get; set; } = new();
+    /// <summary>Skärm → ingången appen senast bytte till.</summary>
+    public Dictionary<string, byte> LastInputs { get; set; } = new();
+    /// <summary>Skärmar som inte rapporterar rätt ingång via DDC/CI (svarar alltid med sin egen port).</summary>
+    public List<string> UnreliableInput { get; set; } = new();
+    public int Version { get; set; }
 }
 
 public static class Settings
@@ -44,6 +49,15 @@ public static class Settings
             catch { current = null; }
             current ??= new AppSettings();
             current.HomeInputs = new Dictionary<string, byte>(current.HomeInputs, StringComparer.OrdinalIgnoreCase);
+            current.LastInputs = new Dictionary<string, byte>(current.LastInputs, StringComparer.OrdinalIgnoreCase);
+            if (current.Version < 2)
+            {
+                // Tidigare var "Visar: …" en permanent låsning som kunde visa fel dator. Nu är det en
+                // tillfällig upplysning som släpps när ingången byts – rensa de gamla låsningarna.
+                current.MonitorOwners.Clear();
+                current.Version = 2;
+                Save();
+            }
             return current;
         }
     }
@@ -99,6 +113,50 @@ public static class Settings
         get { lock (Gate) return S.ShareClipboard; }
         set { lock (Gate) { S.ShareClipboard = value; Save(); } }
     }
+
+    /// <summary>
+    /// Appen har bytt skärmens ingång. Kom ihåg det, och släpp en manuell "Visar: …"-upplysning –
+    /// nu vet appen själv vad skärmen visar.
+    /// </summary>
+    public static void SetLastInput(string dev, byte code)
+    {
+        lock (Gate)
+        {
+            S.LastInputs[dev] = code;
+            foreach (var k in S.MonitorOwners.Keys.Where(k => string.Equals(k, dev, StringComparison.OrdinalIgnoreCase)).ToList())
+                S.MonitorOwners.Remove(k);
+            Save();
+        }
+    }
+
+    public static byte? LastInput(string dev)
+    {
+        lock (Gate) return S.LastInputs.TryGetValue(dev, out var c) ? c : null;
+    }
+
+    public static bool IsInputUnreliable(string dev)
+    {
+        lock (Gate) return S.UnreliableInput.Contains(dev, StringComparer.OrdinalIgnoreCase);
+    }
+
+    public static void SetInputUnreliable(string dev, bool unreliable)
+    {
+        lock (Gate)
+        {
+            bool has = S.UnreliableInput.Contains(dev, StringComparer.OrdinalIgnoreCase);
+            if (has == unreliable) return;
+            if (unreliable) S.UnreliableInput.Add(dev);
+            else S.UnreliableInput.RemoveAll(d => string.Equals(d, dev, StringComparison.OrdinalIgnoreCase));
+            Save();
+        }
+    }
+
+    /// <summary>
+    /// Ingången skärmen visar: det DDC/CI säger, utom för skärmar som inte rapporterar rätt –
+    /// då gäller den ingång appen senast bytte till.
+    /// </summary>
+    public static byte? EffectiveInput(string dev, byte? readBack) =>
+        IsInputUnreliable(dev) && LastInput(dev) is byte last ? last : readBack;
 
     public static string? MonitorOwner(string dev)
     {

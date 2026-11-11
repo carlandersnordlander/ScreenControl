@@ -89,7 +89,8 @@ public sealed partial class AppWindow
         if (manual != null) return (manual, "manual");
 
         var reporting = Reporting(KeyOf(dev, t));
-        byte? cur = t is { Active: true } && inputs.TryGetValue(t.Id, out var info) && info.Current is uint c ? (byte)c : null;
+        byte? cur = Settings.EffectiveInput(dev,
+            t is { Active: true } && inputs.TryGetValue(t.Id, out var info) && info.Current is uint c ? (byte)c : null);
 
         // Den här datorn når inte skärmen – fråga klienterna, de ser den när den visar dem.
         if (cur == null)
@@ -113,7 +114,7 @@ public sealed partial class AppWindow
 
         if (cur is byte cc)
         {
-            bool? home = Settings.IsHome(t!, cc);
+            bool? home = t != null ? Settings.IsHome(t, cc) : Settings.HomeInput(dev) is byte hh ? hh == cc : null;
             if (home == false)
             {
                 var mapped = Settings.InputOwner(dev, cc);
@@ -163,7 +164,7 @@ public sealed partial class AppWindow
         string? directError = null;
         if (t is { Active: true })
         {
-            try { await Task.Run(() => Ddc.SetInput(t.GdiName, t.PhysIndex, code)); return null; }
+            try { await Task.Run(() => Ddc.SetInput(t.GdiName, t.PhysIndex, code)); Commanded(dev, code); return null; }
             catch (Exception ex) { directError = ex.Message; }
         }
         string key = KeyOf(dev, t);
@@ -175,10 +176,32 @@ public sealed partial class AppWindow
         foreach (var s in sessions.OrderByDescending(s => s.Info?.Monitors.FirstOrDefault(m => m.Key == key)?.Input != null))
         {
             var r = await s.SetInput(key, code, TimeSpan.FromSeconds(6));
-            if (r.Ok) return null;
+            if (r.Ok) { Commanded(dev, code); return null; }
             last = $"via {s.Name}: {r.Error}";
         }
         return last;
+    }
+
+    /// <summary>
+    /// Ingången byttes. Kom ihåg den, och kontrollera efter en stund om skärmen rapporterar rätt:
+    /// svarar den fortfarande med den här datorns ingång fast den bytt bort, går det inte att lita på
+    /// skärmens svar – då används senaste bytet i stället (t.ex. VG252Q via DisplayPort).
+    /// </summary>
+    void Commanded(string dev, byte code)
+    {
+        Settings.SetLastInput(dev, code);
+        var home = Settings.HomeInput(dev);
+        if (home == null || home == code) return; // går inte att avgöra när vi byter till vår egen ingång
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(3500);
+            var t = DisplayConfig.GetTargets().FirstOrDefault(x => x.Active && string.Equals(x.DevicePath, dev, StringComparison.OrdinalIgnoreCase));
+            if (t == null) return; // skärmen försvann ur Windows – inget att jämföra med
+            var read = Ddc.ReadStatus(t.GdiName, t.PhysIndex).Input;
+            if (read == home) Settings.SetInputUnreliable(dev, true);
+            else if (read == code) Settings.SetInputUnreliable(dev, false);
+            BeginInvoke(async () => await PushState());
+        });
     }
 
     /// <summary>"Alla skärmar hit": byt tillbaka alla skärmar till den här datorns ingång och utöka.</summary>

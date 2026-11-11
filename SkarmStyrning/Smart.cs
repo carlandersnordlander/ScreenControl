@@ -31,7 +31,12 @@ public static class Smart
     /// <summary>Avgör för varje aktiv skärm om den visar den här datorn.</summary>
     public static Dictionary<string, PresenceInfo> Check(List<DisplayTarget> active)
     {
-        var raw = active.Select(t => (t, s: Ddc.ReadStatus(t.GdiName, t.PhysIndex))).ToList();
+        // Skärmar som inte rapporterar rätt ingång: använd ingången appen senast bytte till.
+        var raw = active.Select(t =>
+        {
+            var s = Ddc.ReadStatus(t.GdiName, t.PhysIndex);
+            return (t, s: s with { Input = Settings.EffectiveInput(t.DevicePath, s.Input) });
+        }).ToList();
 
         bool Healthy((DisplayTarget t, Ddc.DdcStatus s) x) =>
             x.s.Responded && x.s.PowerOn != false && (x.s.Input is not byte i || Settings.IsHome(x.t, i) != false);
