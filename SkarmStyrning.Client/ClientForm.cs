@@ -17,6 +17,7 @@ sealed class ClientForm : Form
     readonly CheckBox autostart = new() { Text = "Starta automatiskt när jag loggar in", AutoSize = true };
     bool reallyClose;
     readonly Net.ClipboardWatcher clipboard;
+    readonly Label audioStatus = new() { AutoSize = true, MaximumSize = new Size(440, 0), Text = "Ljud: skickas inte (inte ansluten)." };
 
     static readonly Color Accent = Color.FromArgb(47, 107, 255);
 
@@ -87,6 +88,15 @@ sealed class ClientForm : Form
         root.Controls.Add(row2);
         AcceptButton = pairBtn;
 
+        root.Controls.Add(Heading("Ljud"));
+        root.Controls.Add(audioStatus);
+        root.Controls.Add(new Label
+        {
+            Text = "Allt som spelas upp här skickas till den andra datorns högtalare. Vill du inte höra det här också: " +
+                   "välj en ljudutgång utan högtalare (t.ex. en skärm via HDMI) som standard i Windows.",
+            AutoSize = true, MaximumSize = new Size(440, 0), ForeColor = Color.DimGray, Margin = new Padding(0, 4, 0, 6),
+        });
+
         root.Controls.Add(pairedInfo);
         var row3 = Row();
         row3.Controls.Add(Button("Glöm servern", (_, _) => { link.Forget(); UpdatePaired(); }));
@@ -105,6 +115,7 @@ sealed class ClientForm : Form
         clipboard = new Net.ClipboardWatcher();
         clipboard.TextChanged += t => _ = link.SendClipboard(t);
         link.ClipboardReceived += t => BeginInvoke(() => clipboard.SetText(t));
+        link.AudioChanged += () => BeginInvoke(UpdateAudio);
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("Öppna", null, (_, _) => ShowWindow());
@@ -166,6 +177,15 @@ sealed class ClientForm : Form
             testResult.Text = "✗ " + ex.Message;
             link.Start();
         }
+    }
+
+    void UpdateAudio()
+    {
+        var a = link.Audio;
+        if (a == null || a.DeviceName == null) { audioStatus.Text = "Ljud: skickas inte."; return; }
+        audioStatus.Text = a.Sending
+            ? $"🔊 Ljud skickas till {link.Config.ServerName} ({a.Transport.ToUpperInvariant()}) – från {a.DeviceName}"
+            : $"Ljud: redo – skickar när något spelas upp på {a.DeviceName}";
     }
 
     void UpdatePaired()

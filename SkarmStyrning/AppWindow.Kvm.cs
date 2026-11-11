@@ -49,6 +49,7 @@ public sealed partial class AppWindow
             foreach (var s in net.Sessions()) s.Post(Net.MsgType.Clipboard, bytes);
         };
         net.SessionStarted += s => s.Post(Net.MsgType.ClipboardPolicy, new[] { (byte)(Settings.ShareClipboard ? 1 : 0) });
+        StartAudio();
         net.ClipboardReceived += (from, text) => BeginInvoke(() =>
         {
             if (!Settings.ShareClipboard) return;
@@ -60,6 +61,47 @@ public sealed partial class AppWindow
     }
 
     Net.ClipboardWatcher? clipboard;
+    readonly AudioHub audioHub = new();
+
+    /// <summary>Ljud från anslutna datorer spelas upp i den här datorns högtalare.</summary>
+    void StartAudio()
+    {
+        if (net == null) return;
+        net.SessionStarted += SendAudioConfig;
+        net.Disconnected += id => audioHub.Remove(id);
+        net.AudioUdp += audioHub.OnUdp;
+        net.AudioTcp += (s, p) => audioHub.OnTcp(s.Id, p);
+        net.AudioStatus += (s, st) =>
+        {
+            audioHub.OnStatus(s.Id, st);
+            // Kommer inga UDP-paket fram (t.ex. via VPN)? Be klienten skicka via TCP i stället.
+            if (st.Sending && st.Transport == "udp")
+                _ = Task.Delay(2500).ContinueWith(_ =>
+                {
+                    if (audioHub.Stream(s.Id) is { UdpSeen: false } && net.Session(s.Id) == s) s.Post(MsgType.AudioUseTcp);
+                });
+        };
+        audioHub.Changed += () => BeginInvoke(async () => await PushState());
+    }
+
+    void SendAudioConfig(ClientSession s)
+    {
+        var cfg = audioHub.Configure(s.Id, Settings.ShareAudio, Settings.AudioVolume(s.Id));
+        s.Post(MsgType.AudioConfig, Proto.ToJson(cfg));
+    }
+
+    object? AudioState(string clientId)
+    {
+        var st = audioHub.Stream(clientId);
+        return new
+        {
+            enabled = Settings.ShareAudio,
+            sending = st?.Status.Sending == true && DateTime.UtcNow - st.LastPacket < TimeSpan.FromSeconds(3),
+            device = st?.Status.Device,
+            transport = st == null ? null : st.UdpSeen ? "UDP" : st.Status.Transport?.ToUpperInvariant(),
+            volume = Settings.AudioVolume(clientId),
+        };
+    }
 
     void BroadcastClipboardPolicy()
     {
@@ -71,6 +113,7 @@ public sealed partial class AppWindow
     {
         router?.Dispose();
         clipboard?.Dispose();
+        audioHub.Dispose();
         net?.Dispose();
     }
 
@@ -388,6 +431,7 @@ public sealed partial class AppWindow
                 monitors = s?.Info?.Monitors.Select(m => m.Name).ToList() ?? new List<string>(),
                 shownOn,
                 active = activeRemote == p.Id,
+                audio = s != null ? AudioState(p.Id) : null,
             };
         }).ToList();
     }
@@ -551,6 +595,21 @@ public sealed partial class AppWindow
             case "allowFirewall":
                 await AllowInFirewall();
                 return (true, null);
+
+            case "setShareAudio":
+                Settings.ShareAudio = a?["value"]?.GetValue<bool>() ?? true;
+                foreach (var s in net.Sessions()) SendAudioConfig(s);
+                await PushState();
+                return (true, null);
+
+            case "setAudioVolume":
+            {
+                string id = Str("id");
+                float v = (float)(a?["value"]?.GetValue<double>() ?? 1.0);
+                Settings.SetAudioVolume(id, v);
+                audioHub.SetVolume(id, v);
+                return (true, null);
+            }
 
             case "setShareClipboard":
                 Settings.ShareClipboard = a?["value"]?.GetValue<bool>() ?? true;

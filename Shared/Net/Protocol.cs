@@ -36,6 +36,10 @@ public enum MsgType : byte
     InputResult = 28, // klient → server: svar (JSON InputResultMsg)
     Clipboard = 40,   // båda hållen: urklippets text (UTF-8)
     ClipboardPolicy = 41, // server → klient: 1 = dela urklipp, 0 = dela inte
+    AudioConfig = 42, // server → klient: skicka ljud hit (JSON AudioConfigMsg)
+    Audio = 43,       // klient → server: ett ljudpaket via TCP (reserv när UDP inte går fram)
+    AudioUseTcp = 44, // server → klient: UDP kommer inte fram – skicka via TCP
+    AudioStatus = 45, // klient → server: skickar/skickar inte, från vilken enhet (JSON AudioStatusMsg)
     Ping = 30,
     Pong = 31,
 }

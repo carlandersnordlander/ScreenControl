@@ -22,6 +22,10 @@ public sealed class AppSettings
     public bool ShareInput { get; set; } = true;
     /// <summary>Dela urklipp (text) med anslutna datorer.</summary>
     public bool ShareClipboard { get; set; } = true;
+    /// <summary>Spela upp ljud från anslutna datorer i den här datorns högtalare.</summary>
+    public bool ShareAudio { get; set; } = true;
+    /// <summary>Volym (0–1) för ljudet från varje dator.</summary>
+    public Dictionary<string, float> AudioVolumes { get; set; } = new();
     /// <summary>Skärm → "server" eller klient-id (saknas = automatiskt).</summary>
     public Dictionary<string, string> MonitorOwners { get; set; } = new();
     /// <summary>Skärm → ingångskod (hex) → klient-id: vilken dator som sitter på vilken ingång.</summary>
@@ -179,6 +183,22 @@ public static class Settings
     /// </summary>
     public static byte? EffectiveInput(string dev, byte? readBack) =>
         IsInputUnreliable(dev) && LastInput(dev) is byte last ? last : readBack;
+
+    public static bool ShareAudio
+    {
+        get { lock (Gate) return S.ShareAudio; }
+        set { lock (Gate) { S.ShareAudio = value; Save(); } }
+    }
+
+    public static float AudioVolume(string clientId)
+    {
+        lock (Gate) return S.AudioVolumes.TryGetValue(clientId, out var v) ? v : 1f;
+    }
+
+    public static void SetAudioVolume(string clientId, float volume)
+    {
+        lock (Gate) { S.AudioVolumes[clientId] = Math.Clamp(volume, 0f, 1f); Save(); }
+    }
 
     public static string? MonitorOwner(string dev)
     {

@@ -87,6 +87,12 @@ public sealed class NetServer : IDisposable
     public event Action<ClientSession>? SessionStarted;
     /// <summary>Text som kopierats på en ansluten dator (bakgrundstråd).</summary>
     public event Action<ClientSession, string>? ClipboardReceived;
+    /// <summary>Ljudpaket via UDP (på sökporten, känns igen på första byten).</summary>
+    public event Action<byte[]>? AudioUdp;
+    /// <summary>Ljudpaket via TCP (reserv).</summary>
+    public event Action<ClientSession, byte[]>? AudioTcp;
+    /// <summary>Klienten berättar om den skickar ljud och från vilken enhet.</summary>
+    public event Action<ClientSession, AudioStatusMsg>? AudioStatus;
 
     public NetServer()
     {
@@ -109,6 +115,10 @@ public sealed class NetServer : IDisposable
         try
         {
             discovery = new UdpClient(new IPEndPoint(IPAddress.Any, Proto.DiscoveryPort));
+            // Windows avbryter annars mottagningen när ett svar inte kommer fram (ICMP) – ljudet ska inte hacka av det.
+            const int SIO_UDP_CONNRESET = unchecked((int)0x9800000C);
+            try { discovery.Client.IOControl(SIO_UDP_CONNRESET, new byte[4], null); } catch { }
+            discovery.Client.ReceiveBufferSize = 256 * 1024;
             _ = Task.Run(DiscoveryLoop);
         }
         catch { /* sökning är frivillig – man kan alltid skriva in adressen */ }
@@ -209,11 +219,12 @@ public sealed class NetServer : IDisposable
             try
             {
                 var r = await discovery!.ReceiveAsync(cts.Token);
+                if (r.Buffer.Length > 0 && r.Buffer[0] == AudioFormat.UdpMagic) { AudioUdp?.Invoke(r.Buffer); continue; }
                 if (Encoding.UTF8.GetString(r.Buffer) == Proto.DiscoveryQuery)
                     await discovery.SendAsync(reply, r.RemoteEndPoint, cts.Token);
             }
             catch (OperationCanceledException) { return; }
-            catch { await Task.Delay(500); }
+            catch { await Task.Delay(20); }
         }
     }
 
@@ -302,6 +313,14 @@ public sealed class NetServer : IDisposable
                 else if (type == MsgType.Clipboard)
                 {
                     ClipboardReceived?.Invoke(session, Encoding.UTF8.GetString(p));
+                }
+                else if (type == MsgType.Audio)
+                {
+                    AudioTcp?.Invoke(session, p);
+                }
+                else if (type == MsgType.AudioStatus)
+                {
+                    AudioStatus?.Invoke(session, Proto.FromJson<AudioStatusMsg>(p));
                 }
             }
         }

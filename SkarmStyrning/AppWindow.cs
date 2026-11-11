@@ -800,6 +800,7 @@ public sealed partial class AppWindow : Form
                 hotkeys = new { next = HotkeyState(Settings.HotkeyNextProfile), extend = HotkeyState(Settings.HotkeyExtend), home = HotkeyState(Settings.HotkeyHome) },
                 shareInput = Settings.ShareInput,
                 shareClipboard = Settings.ShareClipboard,
+                shareAudio = Settings.ShareAudio,
             },
             computers = ComputersState(),
             net = NetState(),

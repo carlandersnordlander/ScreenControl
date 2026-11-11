@@ -14,7 +14,9 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Concentus" Version="2.2.2" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" />
+    <PackageReference Include="NAudio.Wasapi" Version="3.3.0" />
   </ItemGroup>
 
   <ItemGroup>

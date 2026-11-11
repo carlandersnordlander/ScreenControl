@@ -76,7 +76,7 @@ sealed class ClientLink : IDisposable
         channel = null;
     }
 
-    public void Dispose() => Stop();
+    public void Dispose() { Stop(); audio?.Dispose(); }
 
     void Status(string text, bool connected) => StatusChanged?.Invoke(text, connected, controlled);
 
@@ -131,6 +131,7 @@ sealed class ClientLink : IDisposable
             {
                 Status($"Ansluter till {Config.ServerName ?? Config.ServerAddress} …", false);
                 using var tcp = await Connect(Config.ServerAddress!, ct);
+                serverIp = (tcp.Client.RemoteEndPoint as IPEndPoint)?.Address;
                 var (ch, server, _) = await SecureChannel.ConnectAsClient(tcp.GetStream(), Config.ClientId, Config.Name, "auth", Config.Key!, ct);
                 if (Config.ServerId != null && server.Id != Config.ServerId)
                     throw new UnauthorizedAccessException("En annan server svarade på adressen.");
@@ -147,6 +148,8 @@ sealed class ClientLink : IDisposable
                 channel?.Dispose();
                 channel = null;
                 shareClipboard = false;
+                audio?.Stop();
+                AudioChanged?.Invoke();
                 if (controlled) { controlled = false; Injector.ReleaseAll(); }
             }
             try { await Task.Delay(5000, ct); } catch { return; }
@@ -155,6 +158,31 @@ sealed class ClientLink : IDisposable
 
     int pings;
     volatile bool shareClipboard;
+    IPAddress? serverIp;
+    AudioSender? audio;
+
+    /// <summary>Ljudet som skickas till servern (null innan första anslutningen).</summary>
+    public AudioSender? Audio => audio;
+    public event Action? AudioChanged;
+
+    AudioSender EnsureAudio()
+    {
+        if (audio != null) return audio;
+        audio = new AudioSender(async (type, payload) =>
+        {
+            var ch = channel;
+            if (ch != null) try { await ch.Send(type, payload); } catch { }
+        });
+        audio.StatusChanged += () =>
+        {
+            AudioChanged?.Invoke();
+            var ch = channel;
+            if (ch == null) return;
+            var st = new AudioStatusMsg { Sending = audio.Sending, Device = audio.DeviceName, Transport = audio.Transport };
+            _ = ch.Send(MsgType.AudioStatus, Proto.ToJson(st));
+        };
+        return audio;
+    }
 
     /// <summary>Text som kopierats på servern.</summary>
     public event Action<string>? ClipboardReceived;
@@ -210,6 +238,18 @@ sealed class ClientLink : IDisposable
                     break;
                 case MsgType.SetInput:
                     _ = HandleSetInput(ch, Proto.FromJson<SetInputMsg>(p), ct);
+                    break;
+                case MsgType.AudioConfig:
+                {
+                    var cfg = Proto.FromJson<AudioConfigMsg>(p);
+                    var a = EnsureAudio();
+                    if (cfg.Enabled && serverIp != null) _ = Task.Run(() => a.Start(cfg, serverIp));
+                    else a.Stop();
+                    AudioChanged?.Invoke();
+                    break;
+                }
+                case MsgType.AudioUseTcp:
+                    audio?.UseTcp();
                     break;
                 case MsgType.ClipboardPolicy:
                     shareClipboard = p.Length > 0 && p[0] == 1;

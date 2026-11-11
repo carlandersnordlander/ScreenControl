@@ -42,6 +42,8 @@ const ICON = {
   close: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>',
   home: '<svg viewBox="0 0 24 24"><path d="m4 11 8-7 8 7v8a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1z"/></svg>',
   plug: '<svg viewBox="0 0 24 24"><path d="M9 7V3m6 4V3M7 7h10v4a5 5 0 0 1-10 0zm5 9v5"/></svg>',
+  speaker: '<svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg>',
+  speakerOff: '<svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="m17 9 5 5m0-5-5 5"/></svg>',
   laptop: '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/></svg>',
   link: '<svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>',
   edit: '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg>',
@@ -561,6 +563,7 @@ $('#inspector').addEventListener('change', e => {
 /* ================= Datorer ================= */
 function renderComputers() {
   const box = $('#computers');
+  if (volDragging) return; // rita inte om medan volymen dras
   const cs = state.computers || [];
   const hk = state.settings.hotkeys?.home?.keys || [];
   $('#btnAllHome').hidden = !cs.some(c => c.connected);
@@ -589,6 +592,15 @@ function renderComputers() {
           : c.connected ? '<span>Visas inte på någon skärm just nu</span>' : ''}
         ${c.monitors.length ? `<span class="faint">Ser skärmarna: ${esc(c.monitors.join(', '))}</span>` : ''}
       </div>
+      ${c.audio ? `
+      <div class="audio-row ${c.audio.sending ? 'live' : ''}">
+        <span class="audio-icon" title="${c.audio.enabled ? 'Ljud från datorn spelas upp här' : 'Ljud är avstängt i inställningarna'}">${c.audio.enabled ? ICON.speaker : ICON.speakerOff}</span>
+        <div class="audio-text">
+          <div>${!c.audio.enabled ? 'Ljud av' : c.audio.sending ? 'Spelar upp ljud' : 'Ljud: tyst just nu'}${c.audio.sending && c.audio.transport ? ` <span class="faint">· ${esc(c.audio.transport)}</span>` : ''}</div>
+          ${c.audio.device ? `<div class="faint">Från ${esc(c.audio.device)}</div>` : ''}
+        </div>
+        ${c.audio.enabled ? `<input type="range" class="vol" min="0" max="100" value="${Math.round(c.audio.volume * 100)}" data-vol="${esc(c.id)}" title="Volym">` : ''}
+      </div>` : ''}
       <div class="profile-actions">
         <button class="btn small ghost" data-act="rename">${ICON.edit}Byt namn</button>
         <button class="btn small ghost danger" data-act="remove" title="Ta bort">${ICON.trash}</button>
@@ -618,6 +630,15 @@ $('#computers').addEventListener('click', e => {
 });
 
 $('#btnAddComputer').onclick = openPairing;
+// Volym per dator – skickas medan man drar, men gränssnittet ritas inte om under tiden.
+let volDragging = false;
+$('#computers').addEventListener('input', e => {
+  const r = e.target.closest('[data-vol]');
+  if (!r) return;
+  volDragging = true;
+  call('setAudioVolume', { id: r.dataset.vol, value: Number(r.value) / 100 }).catch(() => {});
+});
+$('#computers').addEventListener('change', e => { if (e.target.closest('[data-vol]')) volDragging = false; });
 $('#btnAllHome').onclick = () => call('allHome').catch(() => {});
 
 function firewallNotice() {
@@ -979,6 +1000,7 @@ function openSettings() {
     <div class="group">
       <h4>Andra datorer</h4>
       <div class="toggle-row"><div><strong>Dela mus och tangentbord</strong><span>Pekaren går över till skärmar som visar en annan dator</span></div><label class="switch"><input type="checkbox" id="sShare" ${s.shareInput ? 'checked' : ''}><i></i></label></div>
+      <div class="toggle-row"><div><strong>Spela upp ljud från andra datorer</strong><span>Allt ljud från en ansluten dator hörs i den här datorns högtalare</span></div><label class="switch"><input type="checkbox" id="sAudio" ${s.shareAudio ? 'checked' : ''}><i></i></label></div>
       <div class="toggle-row"><div><strong>Dela urklipp</strong><span>Kopiera text på en dator och klistra in på den andra</span></div><label class="switch"><input type="checkbox" id="sClip" ${s.shareClipboard ? 'checked' : ''}><i></i></label></div>
       <div class="about"><ul>
         <li><b>Ctrl+Shift+Alt</b> + valfri tangent tar alltid tillbaka musen.</li>
@@ -1014,6 +1036,7 @@ function openSettings() {
       $('#sAuto', root).onchange = e => call('setAuto', { value: e.target.checked }).catch(() => {});
       $('#sShare', root).onchange = e => call('setShareInput', { value: e.target.checked }).catch(() => {});
       $('#sClip', root).onchange = e => call('setShareClipboard', { value: e.target.checked }).catch(() => {});
+      $('#sAudio', root).onchange = e => call('setShareAudio', { value: e.target.checked }).catch(() => {});
       $('#sTheme', root).onclick = e => {
         const b = e.target.closest('button'); if (!b) return;
         for (const x of root.querySelectorAll('#sTheme button')) x.className = x === b ? 'active accent' : '';

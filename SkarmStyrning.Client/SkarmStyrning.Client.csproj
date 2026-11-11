@@ -19,4 +19,9 @@
   <ItemGroup>
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Concentus" Version="2.2.2" />
+    <PackageReference Include="NAudio.Wasapi" Version="3.3.0" />
+  </ItemGroup>
+
 </Project>

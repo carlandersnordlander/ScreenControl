@@ -72,6 +72,10 @@ Många jobb-VPN:er stänger av åtkomsten till det lokala nätverket. Tryck **Te
 - När pekaren går över kanten till en skärm som visar jobbdatorn fångar huvudappen mus och
   tangentbord och skickar dem krypterat (ECDH P-256 + AES-GCM) till klienten.
 - **Ctrl+Shift+Alt + valfri tangent** tar alltid tillbaka musen.
+- **Ljud:** allt som spelas upp på klienten hörs i den här datorns högtalare (Opus 160 kbit/s, 48 kHz stereo,
+  ca 30–60 ms fördröjning på hemnätverket). Ljudet går krypterat via UDP, eller via den vanliga förbindelsen om UDP
+  inte går fram. Volym per dator under *Datorer*. Vill du inte höra ljudet på klienten också: välj en ljudutgång
+  utan högtalare (t.ex. en skärm via HDMI) som standard där.
 - **Delat urklipp:** text du kopierar på en dator finns direkt att klistra in på de andra (krypterat).
   Stäng av under *Inställningar → Andra datorer → Dela urklipp*; då skickar klienten ingenting.
 - Byt ingång med en profil så följer delningen automatiskt med.
