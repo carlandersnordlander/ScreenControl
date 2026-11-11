@@ -31,6 +31,9 @@ public sealed partial class AppWindow
             await PushState();
         });
         router.Start();
+
+        // Profiler byter ingång via klienten när den här datorn inte når skärmen.
+        Actions.SetInputAnyRoute = (dev, code) => SetInputRouted(dev, code).GetAwaiter().GetResult();
     }
 
     void StopKvm()
@@ -46,38 +49,132 @@ public sealed partial class AppWindow
     /// källa som ingen ansluten klient har). Bygger på ingången (DDC/CI), vad klienterna
     /// rapporterar och vad användaren valt.
     /// </summary>
-    (string? owner, string how) ResolveOwner(DisplayTarget t)
+    /// <param name="dev">Skärmens device path här.</param>
+    /// <param name="t">Skärmen som Windows ser den här (null = den här datorn ser den inte alls just nu).</param>
+    (string? owner, string how) ResolveOwner(string dev, DisplayTarget? t)
     {
-        var manual = Settings.MonitorOwner(t.DevicePath);
-        if (manual == "server") return (null, "manual");
+        var manual = Settings.MonitorOwner(dev);
+        if (manual == "server") return t == null ? ("none", "manual") : (null, "manual");
         if (manual != null) return (manual, "manual");
 
-        var reporting = Reporting(t);
-        byte? cur = inputs.TryGetValue(t.Id, out var info) && info.Current is uint c ? (byte)c : null;
-        if (cur is byte code)
+        var reporting = Reporting(KeyOf(dev, t));
+        byte? cur = t is { Active: true } && inputs.TryGetValue(t.Id, out var info) && info.Current is uint c ? (byte)c : null;
+
+        // Den här datorn når inte skärmen – fråga klienterna, de ser den när den visar dem.
+        if (cur == null)
         {
-            bool? home = Settings.IsHome(t, code);
+            foreach (var s in reporting)
+            {
+                var m = s.Info!.Monitors.First(x => x.Key == KeyOf(dev, t));
+                if (m.Input is not int ci) continue;
+                byte code = (byte)ci;
+                bool? home = Settings.HomeInput(dev) is byte h ? h == code : t != null ? Settings.IsHome(t, code) : null;
+                if (home == true) return t is { Active: true } ? (null, "client") : ("none", "client");
+                if (home == false)
+                {
+                    var mapped = Settings.InputOwner(dev, code);
+                    if (mapped != null) return (mapped, "input");
+                    Settings.SetInputOwner(dev, code, s.Id); // klienten ser skärmen på en ingång som inte är vår
+                    return (s.Id, "input");
+                }
+            }
+        }
+
+        if (cur is byte cc)
+        {
+            bool? home = Settings.IsHome(t!, cc);
             if (home == false)
             {
-                var mapped = Settings.InputOwner(t.DevicePath, code);
+                var mapped = Settings.InputOwner(dev, cc);
                 if (mapped != null) return (mapped, "input");
                 if (reporting.Count == 1)
                 {
                     // Bara en annan dator sitter på skärmen – då måste det vara den. Kom ihåg ingången.
-                    Settings.SetInputOwner(t.DevicePath, code, reporting[0].Id);
+                    Settings.SetInputOwner(dev, cc, reporting[0].Id);
                     return (reporting[0].Id, "input");
                 }
                 return ("other", "input");
             }
-            if (home == true && t.Active) return (null, "input");
+            if (home == true) return (null, "input");
         }
+        if (t == null) return reporting.Count > 0 ? (reporting[0].Id, "guess") : ("none", "off");
         if (!t.Active && Smart.ExcludedReason(t.DevicePath) != null && reporting.Count == 1) return (reporting[0].Id, "guess");
         return (null, t.Active ? "default" : "off");
     }
 
-    List<ClientSession> Reporting(DisplayTarget t) =>
-        net == null || t.EdidKey == "" ? new() :
-        net.Sessions().Where(s => s.Info?.Monitors.Any(m => m.Key == t.EdidKey) == true).ToList();
+    static string KeyOf(string dev, DisplayTarget? t) => t?.EdidKey is { Length: > 0 } k ? k : PositionMemory.EdidOf(dev) ?? "";
+
+    List<ClientSession> Reporting(string key) =>
+        net == null || key == "" ? new() :
+        net.Sessions().Where(s => s.Info?.Monitors.Any(m => m.Key == key) == true).ToList();
+
+    /// <summary>En ansluten dator som ser skärmen och kan läsa dess ingång (null om ingen).</summary>
+    (string name, byte? current)? ClientView(string dev, DisplayTarget? t)
+    {
+        var key = KeyOf(dev, t);
+        foreach (var s in Reporting(key))
+        {
+            var m = s.Info!.Monitors.First(x => x.Key == key);
+            if (m.Input is int i) return (s.Name, (byte)i);
+        }
+        return null;
+    }
+
+    // ---------------- Byta ingång via rätt dator ----------------
+
+    /// <summary>
+    /// Byter ingång härifrån om det går, annars via en ansluten dator som når skärmen.
+    /// Körs i bakgrunden. Returnerar null om det gick, annars ett felmeddelande.
+    /// </summary>
+    async Task<string?> SetInputRouted(string dev, byte code)
+    {
+        var t = targets.FirstOrDefault(x => string.Equals(x.DevicePath, dev, StringComparison.OrdinalIgnoreCase));
+        string? directError = null;
+        if (t is { Active: true })
+        {
+            try { await Task.Run(() => Ddc.SetInput(t.GdiName, t.PhysIndex, code)); return null; }
+            catch (Exception ex) { directError = ex.Message; }
+        }
+        string key = KeyOf(dev, t);
+        var sessions = Reporting(key);
+        if (sessions.Count == 0)
+            return directError ?? "Den här datorn når inte skärmen, och ingen ansluten dator ser den.";
+        string? last = null;
+        // Datorer som kan läsa skärmens ingång når den säkert – prova dem först.
+        foreach (var s in sessions.OrderByDescending(s => s.Info?.Monitors.FirstOrDefault(m => m.Key == key)?.Input != null))
+        {
+            var r = await s.SetInput(key, code, TimeSpan.FromSeconds(6));
+            if (r.Ok) return null;
+            last = $"via {s.Name}: {r.Error}";
+        }
+        return last;
+    }
+
+    /// <summary>"Alla skärmar hit": byt tillbaka alla skärmar till den här datorns ingång och utöka.</summary>
+    async Task AllHome()
+    {
+        var plan = PositionMemory.Items()
+            .Select(i => (dev: i.Dev, name: targets.FirstOrDefault(t => t.DevicePath == i.Dev)?.Label ?? i.Name, home: Settings.HomeInput(i.Dev)))
+            .Where(x => x.home != null)
+            .Where(x =>
+            {
+                // Hoppa över skärmar som redan visar den här datorn.
+                var t = targets.FirstOrDefault(t => t.DevicePath == x.dev);
+                return !(t is { Active: true } && inputs.TryGetValue(t.Id, out var info) && info.Current == x.home);
+            })
+            .ToList();
+        await DisplayOp("Hämtar tillbaka skärmarna", () =>
+        {
+            var errors = new List<string>();
+            foreach (var (dev, name, home) in plan)
+                if (SetInputRouted(dev, home!.Value).GetAwaiter().GetResult() is string err) errors.Add($"{name}: {err}");
+            if (plan.Count > 0) Thread.Sleep(3000); // låt skärmarna dyka upp i Windows igen
+            Settings.ExtendIntent = true;
+            var msg = Smart.Extend(userInitiated: true) ?? "Alla skärmar visar den här datorn.";
+            if (errors.Count > 0) throw new InvalidOperationException(msg + "\nKunde inte byta: " + string.Join("; ", errors));
+            return msg;
+        });
+    }
 
     /// <summary>Bygger den gemensamma ytan som kroken använder.</summary>
     void RebuildRegions()
@@ -87,17 +184,17 @@ public sealed partial class AppWindow
         foreach (var p in Placed())
         {
             var t = targets.FirstOrDefault(x => string.Equals(x.Id, p.id, StringComparison.OrdinalIgnoreCase));
-            if (t == null) continue;
             var master = new Rectangle(p.x, p.y, p.w, p.h);
-            Rectangle? sr = t.Active && t.HasGeometry ? new Rectangle(t.X, t.Y, t.Width, t.Height) : null;
-            var (owner, _) = ResolveOwner(t);
-            if (owner == null) { if (sr != null) list.Add(new Region(t.Id, master, null, sr, null)); continue; }
-            if (owner == "other") continue;
+            Rectangle? sr = t is { Active: true, HasGeometry: true } ? new Rectangle(t.X, t.Y, t.Width, t.Height) : null;
+            var (owner, _) = ResolveOwner(p.id, t);
+            if (owner == null) { if (sr != null) list.Add(new Region(p.id, master, null, sr, null)); continue; }
+            if (owner is "other" or "none") continue;
             var s = net.Session(owner);
             var monitors = s?.Info?.Monitors;
-            var cm = monitors?.FirstOrDefault(m => m.Key == t.EdidKey) ?? (monitors?.Count == 1 ? monitors[0] : null);
+            string key = KeyOf(p.id, t);
+            var cm = monitors?.FirstOrDefault(m => m.Key == key) ?? (monitors?.Count == 1 ? monitors[0] : null);
             if (cm == null) continue;
-            list.Add(new Region(t.Id, master, owner, sr, new Rectangle(cm.X, cm.Y, cm.W, cm.H)));
+            list.Add(new Region(p.id, master, owner, sr, new Rectangle(cm.X, cm.Y, cm.W, cm.H)));
         }
         lastRegions = list.ToArray();
         router.Update(lastRegions);
@@ -105,50 +202,50 @@ public sealed partial class AppWindow
 
     // ---------------- Tillstånd till gränssnittet ----------------
 
-    object? OwnerState(DisplayTarget? t)
+    object? OwnerState(string dev, DisplayTarget? t)
     {
-        if (t == null || net == null) return null;
-        var (owner, how) = ResolveOwner(t);
-        string kind = owner == null ? "server" : owner == "other" ? "other" : "client";
+        if (net == null) return null;
+        var (owner, how) = ResolveOwner(dev, t);
+        string kind = owner == null ? "server" : owner is "other" or "none" ? owner : "client";
         string? name = kind == "client" ? (net.Session(owner!)?.Name ?? net.PairedClients().FirstOrDefault(p => p.Id == owner)?.Name ?? "Okänd dator") : null;
         bool connected = kind != "client" || net.Session(owner!) != null;
-        bool reachable = lastRegions.Any(r => r.Dev == t.Id && r.Owner == owner && owner != null);
+        bool reachable = lastRegions.Any(r => r.Dev == dev && r.Owner == owner && owner != null);
         return new
         {
             kind,
             id = kind == "client" ? owner : null,
-            name = kind == "server" ? "Den här datorn" : kind == "other" ? "Annan källa" : name,
+            name = kind switch { "server" => "Den här datorn", "other" => "Annan källa", "none" => "Okänt", _ => name },
             how,
-            manual = Settings.MonitorOwner(t.DevicePath) ?? "auto",
+            manual = Settings.MonitorOwner(dev) ?? "auto",
             connected,
             reachable, // mus och tangentbord kan gå hit
         };
     }
 
-    object ComputersOn(DisplayTarget? t)
+    object ComputersOn(string dev, DisplayTarget? t)
     {
         var list = new List<object>();
-        if (t == null) return list;
-        list.Add(new { id = (string?)null, name = "Den här datorn", input = Settings.HomeInput(t.DevicePath) is byte h ? Ddc.InputName(h) : null });
-        foreach (var s in Reporting(t))
+        if (t != null)
+            list.Add(new { id = (string?)null, name = "Den här datorn", input = Settings.HomeInput(dev) is byte h ? Ddc.InputName(h) : null });
+        foreach (var s in Reporting(KeyOf(dev, t)))
         {
-            var code = InputOf(t, s.Id);
+            var code = InputOf(dev, s.Id);
             list.Add(new { id = (string?)s.Id, name = s.Name, input = code is byte c ? Ddc.InputName(c) : null });
         }
         return list;
     }
 
-    static byte? InputOf(DisplayTarget t, string clientId)
+    static byte? InputOf(string dev, string clientId)
     {
         for (int c = 1; c < 0x20; c++)
-            if (Settings.InputOwner(t.DevicePath, (byte)c) == clientId) return (byte)c;
+            if (Settings.InputOwner(dev, (byte)c) == clientId) return (byte)c;
         return null;
     }
 
-    string? ComputerOnInput(DisplayTarget t, byte code)
+    string? ComputerOnInput(string dev, byte code)
     {
-        if (Settings.HomeInput(t.DevicePath) == code) return "Den här datorn";
-        var owner = Settings.InputOwner(t.DevicePath, code);
+        if (Settings.HomeInput(dev) == code) return "Den här datorn";
+        var owner = Settings.InputOwner(dev, code);
         if (owner == null || net == null) return null;
         return net.Session(owner)?.Name ?? net.PairedClients().FirstOrDefault(p => p.Id == owner)?.Name;
     }
@@ -160,7 +257,9 @@ public sealed partial class AppWindow
         return net.PairedClients().Select(p =>
         {
             var s = sessions.FirstOrDefault(x => x.Id == p.Id);
-            var shownOn = targets.Where(t => ResolveOwner(t).owner == p.Id).Select(t => t.Label).ToList();
+            var shownOn = Placed()
+                .Where(x => ResolveOwner(x.id, targets.FirstOrDefault(t => t.Id == x.id)).owner == p.Id)
+                .Select(x => targets.FirstOrDefault(t => t.Id == x.id)?.Label ?? x.name).ToList();
             return new
             {
                 id = p.Id,
@@ -268,7 +367,7 @@ public sealed partial class AppWindow
     async Task<(bool handled, object? result)> KvmDispatch(string cmd, JsonNode? a)
     {
         string Str(string k) => a?[k]?.GetValue<string>() ?? "";
-        if (net == null) throw new InvalidOperationException("Nätverksdelen är inte igång.");
+        if (net == null) return (false, null); // nätverksdelen är inte igång (t.ex. vid skärmdump för felsökning)
         switch (cmd)
         {
             case "startPairing":
@@ -294,9 +393,11 @@ public sealed partial class AppWindow
 
             case "setOwner":
             {
-                var t = Find(Str("id"));
+                string dev = Str("id");
+                var t = targets.FirstOrDefault(x => x.Id == dev);
                 string owner = Str("owner");
-                Settings.SetMonitorOwner(t.DevicePath, owner == "auto" ? null : owner);
+                Settings.SetMonitorOwner(dev, owner == "auto" ? null : owner);
+                if (t == null) { await PushState(); return (true, null); }
                 // Om användaren väljer en dator för skärmen och vi vet ingången: kom ihåg kopplingen.
                 if (owner != "auto" && owner != "server" && inputs.TryGetValue(t.Id, out var info) && info.Current is uint c
                     && Settings.IsHome(t, (byte)c) == false)
@@ -307,14 +408,18 @@ public sealed partial class AppWindow
 
             case "setInputOwner":
             {
-                var t = Find(Str("id"));
+                string dev = Str("id");
                 byte code = (byte)(a?["code"]?.GetValue<int>() ?? 0);
                 string owner = Str("owner");
-                if (owner == "server") Settings.SetHomeInput(t.DevicePath, code);
-                else Settings.SetInputOwner(t.DevicePath, code, owner == "" ? null : owner);
+                if (owner == "server") Settings.SetHomeInput(dev, code);
+                else Settings.SetInputOwner(dev, code, owner == "" ? null : owner);
                 await PushState();
                 return (true, null);
             }
+
+            case "allHome":
+                await AllHome();
+                return (true, null);
 
             case "allowFirewall":
                 await AllowInFirewall();

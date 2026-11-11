@@ -14,7 +14,19 @@ public sealed class SavedDisplay
     public string SourceMode { get; set; } = "";   // MODE_INFO (source) som base64
     public string? TargetMode { get; set; }        // MODE_INFO (target) som base64
     public string TargetInfo { get; set; } = "";   // PATH_TARGET_INFO som base64
+    public string? EdidKey { get; set; }           // tillverkare + produktkod (samma på alla datorer)
+
+    // Önskat läge: det bästa skärmen haft (eller det användaren valt, Pinned) – återställs vid byten.
+    public int PrefWidth { get; set; }
+    public int PrefHeight { get; set; }
+    public int PrefHz { get; set; }
+    public bool PrefPinned { get; set; }
+    public string? PrefSource { get; set; }
+    public string? PrefTarget { get; set; }
+    public string? PrefInfo { get; set; }
 }
+
+public sealed record PreferredMode(VideoMode Mode, bool Pinned);
 
 public sealed record LayoutItem(string Dev, string Name, int X, int Y, int Width, int Height);
 
@@ -164,6 +176,94 @@ public static class PositionMemory
             }
             Save();
         }
+    }
+
+    static int HzOf(PATH_TARGET_INFO info) =>
+        info.refreshRate.Denominator != 0 ? (int)Math.Round((double)info.refreshRate.Numerator / info.refreshRate.Denominator) : 0;
+
+    /// <summary>
+    /// Ser skärmen i ett visst läge. Är det bättre (större, eller lika stort men snabbare) än det
+    /// sparade blir det skärmens önskade läge. Ett läge användaren valt (Pinned) ändras inte, men
+    /// lägesdatan sparas när skärmen faktiskt står i det.
+    /// </summary>
+    internal static void ObserveMode(string dev, MODE_INFO source, MODE_INFO? target, PATH_TARGET_INFO info)
+    {
+        int w = (int)source.sourceMode.width, h = (int)source.sourceMode.height, hz = HzOf(info);
+        if (w == 0 || h == 0 || hz == 0 || target == null) return;
+        lock (Gate)
+        {
+            if (!Data.TryGetValue(dev, out var d)) return;
+            if (d.PrefWidth == 0 && d.TargetMode != null)
+            {
+                // Första gången: börja från läget skärmen hade när placeringen sparades (t.ex. 4K).
+                try
+                {
+                    var saved = FromB64<MODE_INFO>(d.SourceMode);
+                    (d.PrefWidth, d.PrefHeight, d.PrefHz) = ((int)saved.sourceMode.width, (int)saved.sourceMode.height, HzOf(FromB64<PATH_TARGET_INFO>(d.TargetInfo)));
+                    (d.PrefSource, d.PrefTarget, d.PrefInfo) = (d.SourceMode, d.TargetMode, d.TargetInfo);
+                }
+                catch { }
+            }
+            bool same = d.PrefWidth == w && d.PrefHeight == h && d.PrefHz == hz;
+            bool better = (long)w * h > (long)d.PrefWidth * d.PrefHeight || ((long)w * h == (long)d.PrefWidth * d.PrefHeight && hz > d.PrefHz);
+            if (d.PrefPinned ? !same : !(same || better)) return;
+            string s = ToB64(source), t = ToB64(target.Value), i = ToB64(info);
+            if (same && d.PrefSource == s && d.PrefTarget == t && d.PrefInfo == i) return;
+            (d.PrefWidth, d.PrefHeight, d.PrefHz, d.PrefSource, d.PrefTarget, d.PrefInfo) = (w, h, hz, s, t, i);
+            Save();
+        }
+    }
+
+    /// <summary>Användaren valde ett läge – det gäller tills användaren väljer "automatiskt".</summary>
+    public static void Pin(string dev, VideoMode? mode)
+    {
+        lock (Gate)
+        {
+            if (!Data.TryGetValue(dev, out var d)) return;
+            if (mode is VideoMode m)
+            {
+                if (d.PrefWidth != m.Width || d.PrefHeight != m.Height || d.PrefHz != m.Hz)
+                    (d.PrefSource, d.PrefTarget, d.PrefInfo) = (null, null, null); // fylls i när skärmen står i läget
+                (d.PrefWidth, d.PrefHeight, d.PrefHz, d.PrefPinned) = (m.Width, m.Height, m.Hz, true);
+            }
+            else d.PrefPinned = false;
+            Save();
+        }
+    }
+
+    public static PreferredMode? Preferred(string dev)
+    {
+        lock (Gate)
+            return Data.TryGetValue(dev, out var d) && d.PrefWidth > 0
+                ? new PreferredMode(new VideoMode(d.PrefWidth, d.PrefHeight, d.PrefHz), d.PrefPinned) : null;
+    }
+
+    /// <summary>Lägesdatan för det önskade läget (för SetDisplayConfig), om den finns.</summary>
+    internal static Placement? PreferredPlacement(string dev)
+    {
+        lock (Gate)
+        {
+            if (!Data.TryGetValue(dev, out var d) || d.PrefSource == null || d.PrefTarget == null || d.PrefInfo == null) return null;
+            try { return new Placement(FromB64<MODE_INFO>(d.PrefSource), FromB64<MODE_INFO>(d.PrefTarget), FromB64<PATH_TARGET_INFO>(d.PrefInfo)); }
+            catch { return null; }
+        }
+    }
+
+    /// <summary>Kommer ihåg skärmens EDID-nyckel, så att den kan styras via en annan dator även när den inte syns här.</summary>
+    public static void SetEdid(string dev, string key)
+    {
+        if (string.IsNullOrEmpty(key)) return;
+        lock (Gate)
+        {
+            if (!Data.TryGetValue(dev, out var d) || d.EdidKey == key) return;
+            d.EdidKey = key;
+            Save();
+        }
+    }
+
+    public static string? EdidOf(string dev)
+    {
+        lock (Gate) return Data.TryGetValue(dev, out var d) ? d.EdidKey : null;
     }
 
     public static void Forget(string dev)

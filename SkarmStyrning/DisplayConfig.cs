@@ -404,6 +404,7 @@ public static class DisplayConfig
             };
             if (string.IsNullOrWhiteSpace(t.Name))
                 t.Name = t.OutputTech == 0x80000000 ? "Inbyggd skärm" : "Okänd skärm";
+            if (t.DevicePath != "") PositionMemory.SetEdid(t.DevicePath, t.EdidKey);
 
             int ai = Array.FindIndex(act, a => Match(a.targetInfo, t));
             if (ai >= 0)
@@ -417,6 +418,10 @@ public static class DisplayConfig
                 {
                     t.Geometry = DescribeGeometry(actModes[src.modeInfoIdx], act[ai].targetInfo);
                     SetGeometry(t, actModes[src.modeInfoIdx], act[ai].targetInfo);
+                    uint tmi = act[ai].targetInfo.modeInfoIdx;
+                    if (t.DevicePath != "")
+                        PositionMemory.ObserveMode(t.DevicePath, actModes[src.modeInfoIdx],
+                            tmi < actModes.Length && actModes[tmi].infoType == 2 ? actModes[tmi] : null, act[ai].targetInfo);
                 }
             }
             else if (PositionMemory.Latest(t.DevicePath) is Placement saved)
@@ -440,16 +445,23 @@ public static class DisplayConfig
     /// en grupp med en skärm = utökad, en grupp med flera = de duplicerar varandra.
     /// Skärmar som inte nämns stängs av.
     /// </summary>
-    public static void ApplyGroups(IReadOnlyList<IReadOnlyList<DisplayTarget>> groups)
+    public static void ApplyGroups(IReadOnlyList<IReadOnlyList<DisplayTarget>> groups, string? primaryDev = null)
     {
         if (groups.Count == 0 || groups.All(g => g.Count == 0))
             throw new InvalidOperationException("Minst en skärm måste vara på.");
 
         var (all, _) = Query(QDC_ALL_PATHS);
         var (act, actModes) = Query(QDC_ONLY_ACTIVE_PATHS);
-        Remember(act, actModes); // fånga ändringar som gjorts i Windows inställningar sedan sist
+        if (ValidateLog == null) Remember(act, actModes); // fånga ändringar som gjorts i Windows inställningar sedan sist
 
-        var (pa, modes) = Build(groups, all, act, actModes);
+        // En skärm som bytt källa kan försvinna ur Windows en stund – ta bara med skärmar som finns just nu.
+        var available = all.Where(p => p.targetInfo.targetAvailable != 0)
+            .Select(p => (p.targetInfo.adapterId.Value, p.targetInfo.id)).ToHashSet();
+        groups = groups.Select(g => (IReadOnlyList<DisplayTarget>)g.Where(t => available.Contains((t.Adapter.Value, t.TargetId))).ToList())
+            .Where(g => g.Count > 0).ToList();
+        if (groups.Count == 0) throw new InvalidOperationException("Ingen av de valda skärmarna är ansluten just nu.");
+
+        var (pa, modes) = Build(groups, all, act, actModes, primaryDev);
         Apply(pa, modes);
     }
 
@@ -471,6 +483,9 @@ public static class DisplayConfig
             if (ai < 0) return false;
             uint asi = act[ai].sourceInfo.modeInfoIdx;
             if (asi >= actModes.Length) continue;
+            // Fel upplösning eller Hz räknas också som att layouten inte stämmer.
+            if (modes[(int)si].sourceMode.width != actModes[asi].sourceMode.width || modes[(int)si].sourceMode.height != actModes[asi].sourceMode.height
+                || HzOf(p.targetInfo) != HzOf(act[ai].targetInfo)) return false;
             var want = modes[(int)si].sourceMode.position;
             var cur = actModes[asi].sourceMode.position;
             int ddx = want.x - cur.x, ddy = want.y - cur.y;
@@ -481,8 +496,9 @@ public static class DisplayConfig
     }
 
     static (PATH_INFO[] paths, List<MODE_INFO> modes) Build(
-        IReadOnlyList<IReadOnlyList<DisplayTarget>> groups, PATH_INFO[] all, PATH_INFO[] act, MODE_INFO[] actModes)
+        IReadOnlyList<IReadOnlyList<DisplayTarget>> groups, PATH_INFO[] all, PATH_INFO[] act, MODE_INFO[] actModes, string? primaryDev = null)
     {
+        var srcDev = new Dictionary<uint, string>(); // source-läge → skärm (för att kunna välja huvudskärm)
         var mem = PositionMemory.Resolve(groups.Where(g => g.Count == 1).Select(g => g[0].DevicePath).Where(d => d != "").ToList());
 
         var paths = new List<PATH_INFO>();
@@ -519,6 +535,8 @@ public static class DisplayConfig
                         m.sourceMode.position = saved.Source.sourceMode.position;
                         modes[(int)p.sourceInfo.modeInfoIdx] = m;
                     }
+                    ApplyPreferred(ref p, g[0].DevicePath, modes);
+                    if (p.sourceInfo.modeInfoIdx != INVALID) srcDev[p.sourceInfo.modeInfoIdx] = g[0].DevicePath;
                     paths.Add(p);
                     continue;
                 }
@@ -560,10 +578,18 @@ public static class DisplayConfig
                 if (g.Count == 1 && mem.TryGetValue(t.DevicePath, out var saved))
                 {
                     var (src, tgt, info) = (saved.Source, saved.Target, saved.Info);
+                    // Skärmens önskade upplösning och Hz (t.ex. 4K / 144 Hz) – på sin sparade plats.
+                    if (PositionMemory.PreferredPlacement(t.DevicePath) is Placement pref)
+                    {
+                        var position = src.sourceMode.position;
+                        (src, tgt, info) = (pref.Source, pref.Target, pref.Info);
+                        src.sourceMode.position = position;
+                    }
                     src.adapterId = p.sourceInfo.adapterId;
                     src.id = p.sourceInfo.id;
                     modes.Add(src);
                     p.sourceInfo.modeInfoIdx = (uint)(modes.Count - 1);
+                    srcDev[p.sourceInfo.modeInfoIdx] = t.DevicePath;
                     if (tgt is MODE_INFO tm)
                     {
                         tm.adapterId = p.targetInfo.adapterId;
@@ -580,16 +606,104 @@ public static class DisplayConfig
             }
         }
 
-        // 3) Inga överlapp, inga glapp, huvudskärm på (0,0).
+        // 3) Vald huvudskärm hamnar på (0,0); sedan inga överlapp, inga glapp.
+        if (primaryDev != null && srcDev.FirstOrDefault(kv => string.Equals(kv.Value, primaryDev, StringComparison.OrdinalIgnoreCase)) is { Value: not null } prim)
+        {
+            var o = modes[(int)prim.Key].sourceMode.position;
+            for (int i = 0; i < modes.Count; i++)
+            {
+                if (modes[i].infoType != 1) continue;
+                var m = modes[i];
+                m.sourceMode.position.x -= o.x;
+                m.sourceMode.position.y -= o.y;
+                modes[i] = m;
+            }
+        }
         FixLayout(modes);
         return (paths.ToArray(), modes);
     }
 
+    /// <summary>Felsökning: testa konfigurationer med SDC_VALIDATE i stället för att verkställa dem.</summary>
+    [ThreadStatic] public static List<string>? ValidateLog;
+
+    static readonly string ErrorLog = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SkarmStyrning", "fel.log");
+
+    /// <summary>Skriver misslyckade försök till %APPDATA%\SkarmStyrning\fel.log (för felsökning).</summary>
+    static void LogFailure(string attempt, int code, PATH_INFO[] pa, MODE_INFO[]? modes)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(ErrorLog)!);
+            if (File.Exists(ErrorLog) && new FileInfo(ErrorLog).Length > 512 * 1024) File.Delete(ErrorLog);
+            File.AppendAllText(ErrorLog, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {attempt}: kod {code}\n  {Describe(pa, modes)}\n  {Environment.StackTrace.Split('\n').Skip(3).Take(4).Aggregate("", (a, b) => a + b.Trim() + " | ")}\n");
+        }
+        catch { }
+    }
+
+    static int Set(PATH_INFO[] pa, MODE_INFO[]? modes, string attempt)
+    {
+        if (ValidateLog == null)
+        {
+            int code = SetDisplayConfig((uint)pa.Length, pa, (uint)(modes?.Length ?? 0), modes,
+                SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_SAVE_TO_DATABASE | SDC_ALLOW_CHANGES);
+            if (code != 0) LogFailure(attempt, code, pa, modes);
+            return code;
+        }
+        const uint SDC_VALIDATE = 0x40;
+        int r = SetDisplayConfig((uint)pa.Length, pa, (uint)(modes?.Length ?? 0), modes, SDC_VALIDATE | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES);
+        ValidateLog.Add($"  {attempt}: {(r == 0 ? "OK" : "kod " + r)}");
+        if (r != 0) ValidateLog.Add("    " + Describe(pa, modes));
+        return r;
+    }
+
+    static string Describe(PATH_INFO[] pa, MODE_INFO[]? modes)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (var p in pa)
+        {
+            sb.Append($"[t{p.targetInfo.id} s{p.sourceInfo.id} f{p.flags} avail{p.targetInfo.targetAvailable} ");
+            if (modes != null && p.sourceInfo.modeInfoIdx < modes.Length)
+            {
+                var m = modes[p.sourceInfo.modeInfoIdx];
+                sb.Append($"src#{p.sourceInfo.modeInfoIdx}(id{m.id} {m.sourceMode.width}x{m.sourceMode.height} @{m.sourceMode.position.x},{m.sourceMode.position.y}) ");
+            }
+            else sb.Append("src-");
+            sb.Append(modes != null && p.targetInfo.modeInfoIdx < modes.Length ? $" tgt#{p.targetInfo.modeInfoIdx}(id{modes[p.targetInfo.modeInfoIdx].id})" : " tgt-");
+            sb.Append("] ");
+        }
+        return sb.ToString();
+    }
+
+    static int HzOf(PATH_TARGET_INFO ti) =>
+        ti.refreshRate.Denominator != 0 ? (int)Math.Round((double)ti.refreshRate.Numerator / ti.refreshRate.Denominator) : 0;
+
+    /// <summary>Står skärmen i ett annat läge än sitt önskade (t.ex. 1080p i stället för 4K)? Byt i så fall.</summary>
+    static void ApplyPreferred(ref PATH_INFO p, string dev, List<MODE_INFO> modes)
+    {
+        if (p.sourceInfo.modeInfoIdx == INVALID || PositionMemory.PreferredPlacement(dev) is not Placement pref) return;
+        var m = modes[(int)p.sourceInfo.modeInfoIdx];
+        bool sameSize = m.sourceMode.width == pref.Source.sourceMode.width && m.sourceMode.height == pref.Source.sourceMode.height;
+        if (sameSize && HzOf(p.targetInfo) == HzOf(pref.Info)) return;
+        m.sourceMode.width = pref.Source.sourceMode.width;
+        m.sourceMode.height = pref.Source.sourceMode.height;
+        m.sourceMode.pixelFormat = pref.Source.sourceMode.pixelFormat;
+        modes[(int)p.sourceInfo.modeInfoIdx] = m;
+        if (pref.Target is MODE_INFO tm)
+        {
+            tm.adapterId = p.targetInfo.adapterId;
+            tm.id = p.targetInfo.id;
+            if (p.targetInfo.modeInfoIdx != INVALID && p.targetInfo.modeInfoIdx < modes.Count) modes[(int)p.targetInfo.modeInfoIdx] = tm;
+            else { modes.Add(tm); p.targetInfo.modeInfoIdx = (uint)(modes.Count - 1); }
+            p.targetInfo.refreshRate = pref.Info.refreshRate;
+            p.targetInfo.scanLineOrdering = pref.Info.scanLineOrdering;
+        }
+        else p.targetInfo.modeInfoIdx = INVALID;
+    }
+
     static void Apply(PATH_INFO[] pa, List<MODE_INFO> modes)
     {
-        Quiet();
-        const uint flags = SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_SAVE_TO_DATABASE | SDC_ALLOW_CHANGES;
-        int r = SetDisplayConfig((uint)pa.Length, pa, (uint)modes.Count, modes.Count > 0 ? modes.ToArray() : null, flags);
+        if (ValidateLog == null) Quiet();
+        int r = Set(pa, modes.Count > 0 ? modes.ToArray() : null, "försök 1 (sparade lägen)");
         if (r == 0) return;
 
         // Andra försök: behåll placeringen men låt Windows välja upplösning/Hz för skärmarna.
@@ -606,7 +720,7 @@ public static class DisplayConfig
             }
             pa2[i].targetInfo.modeInfoIdx = INVALID;
         }
-        if (SetDisplayConfig((uint)pa2.Length, pa2, (uint)srcOnly.Count, srcOnly.Count > 0 ? srcOnly.ToArray() : null, flags) == 0) return;
+        if (Set(pa2, srcOnly.Count > 0 ? srcOnly.ToArray() : null, "försök 2 (bara placering)") == 0) return;
 
         // Tredje försök: låt Windows välja allt.
         for (int i = 0; i < pa.Length; i++)
@@ -614,8 +728,8 @@ public static class DisplayConfig
             pa[i].sourceInfo.modeInfoIdx = INVALID;
             pa[i].targetInfo.modeInfoIdx = INVALID;
         }
-        int r3 = SetDisplayConfig((uint)pa.Length, pa, 0, null, flags);
-        if (r3 != 0) throw Fail("SetDisplayConfig", r);
+        int r3 = Set(pa, null, "försök 3 (Windows väljer)");
+        if (r3 != 0) throw Fail("SetDisplayConfig", r3);
     }
 
     /// <summary>Windows inbyggda lägen (samma som Win+P).</summary>
@@ -624,6 +738,62 @@ public static class DisplayConfig
         Quiet();
         int r = SetDisplayConfig(0, null, 0, null, SDC_APPLY | topology);
         if (r != 0) throw Fail("SetDisplayConfig", r);
+    }
+
+    /// <summary>Redigerbar profil-layout av hur skärmarna sitter just nu.</summary>
+    public static ProfileLayout SpecFromCurrent()
+    {
+        var (act, modes) = Query(QDC_ONLY_ACTIVE_PATHS);
+        var devs = act.Select(p => GetTargetName(p.targetInfo.adapterId, p.targetInfo.id)?.monitorDevicePath ?? "").ToList();
+        return SpecFromPaths(act, modes, devs);
+    }
+
+    /// <summary>Gör om en äldre profil (exakt ögonblicksbild) till det redigerbara formatet.</summary>
+    public static ProfileLayout SpecFromSnapshot(LayoutSnapshot snap)
+    {
+        var paths = MemoryMarshal.Cast<byte, PATH_INFO>(Convert.FromBase64String(snap.Paths)).ToArray();
+        var modes = MemoryMarshal.Cast<byte, MODE_INFO>(Convert.FromBase64String(snap.Modes)).ToArray();
+        return SpecFromPaths(paths, modes, snap.PathDevices, dropWorse: true);
+    }
+
+    /// <param name="dropWorse">
+    /// Gamla profiler sparades ibland när Windows hade valt fel läge (t.ex. 60 Hz i stället för 144 Hz).
+    /// Lägen som är sämre än skärmens önskade läge tas då inte med.
+    /// </param>
+    static ProfileLayout SpecFromPaths(PATH_INFO[] paths, MODE_INFO[] modes, List<string> devs, bool dropWorse = false)
+    {
+        var spec = new ProfileLayout();
+        var known = PositionMemory.Items();
+        var firstBySource = new Dictionary<(long, uint), string>();
+        for (int i = 0; i < paths.Length && i < devs.Count; i++)
+        {
+            string dev = devs[i];
+            if (dev == "" || spec.Monitors.Any(m => string.Equals(m.Dev, dev, StringComparison.OrdinalIgnoreCase))) continue;
+            var pm = new ProfileMonitor { Dev = dev, Name = known.FirstOrDefault(k => string.Equals(k.Dev, dev, StringComparison.OrdinalIgnoreCase))?.Name ?? "Skärm" };
+            var key = (paths[i].sourceInfo.adapterId.Value, paths[i].sourceInfo.id);
+            if (firstBySource.TryGetValue(key, out var first)) { pm.Mode = "clone"; pm.CloneOf = first; }
+            else firstBySource[key] = dev;
+
+            uint si = paths[i].sourceInfo.modeInfoIdx;
+            if (si < modes.Length && modes[si].infoType == 1)
+            {
+                var s = modes[si].sourceMode;
+                if (s.position.x == 0 && s.position.y == 0) spec.Primary = dev;
+                // Spara bara ett eget läge om det skiljer sig från skärmens önskade läge.
+                var mode = new VideoMode((int)s.width, (int)s.height, HzOf(paths[i].targetInfo));
+                if (pm.Mode == "extend" && PositionMemory.Preferred(dev)?.Mode is VideoMode pref && pref != mode && mode.Hz > 0)
+                {
+                    bool worse = (long)mode.Width * mode.Height < (long)pref.Width * pref.Height
+                                 || ((long)mode.Width * mode.Height == (long)pref.Width * pref.Height && mode.Hz < pref.Hz);
+                    if (!(dropWorse && worse)) (pm.Width, pm.Height, pm.Hz) = (mode.Width, mode.Height, mode.Hz);
+                }
+            }
+            spec.Monitors.Add(pm);
+        }
+        // Övriga kända skärmar är av i profilen.
+        foreach (var k in known.Where(k => !spec.Monitors.Any(m => string.Equals(m.Dev, k.Dev, StringComparison.OrdinalIgnoreCase))))
+            spec.Monitors.Add(new ProfileMonitor { Dev = k.Dev, Name = k.Name, Mode = "off" });
+        return spec;
     }
 
     public static LayoutSnapshot TakeSnapshot()
@@ -650,7 +820,7 @@ public static class DisplayConfig
     {
         var paths = MemoryMarshal.Cast<byte, PATH_INFO>(Convert.FromBase64String(snap.Paths)).ToArray();
         var modes = MemoryMarshal.Cast<byte, MODE_INFO>(Convert.FromBase64String(snap.Modes)).ToArray();
-        Quiet();
+        if (ValidateLog == null) Quiet();
 
         // Grafikkortens LUID ändras vid omstart – mappa om via skärmarnas stabila device path.
         var (all, _) = Query(QDC_ALL_PATHS);
@@ -661,10 +831,24 @@ public static class DisplayConfig
             if (!string.IsNullOrEmpty(tn?.monitorDevicePath)) current.TryAdd(tn!.Value.monitorDevicePath, (key.adapterId, key.id));
         }
 
+        // Skärmar i profilen som inte är anslutna just nu (t.ex. visar en annan dator) hoppas över.
+        var availableDevs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in all.Where(p => p.targetInfo.targetAvailable != 0))
+            if (GetTargetName(p.targetInfo.adapterId, p.targetInfo.id)?.monitorDevicePath is string d && d != "") availableDevs.Add(d);
+        var keep = Enumerable.Range(0, paths.Length)
+            .Where(i => i < snap.PathDevices.Count && availableDevs.Contains(snap.PathDevices[i])).ToList();
+        if (keep.Count == 0) throw new InvalidOperationException("Ingen av skärmarna i profilen är ansluten just nu.");
+        if (keep.Count < paths.Length)
+        {
+            var devs = keep.Select(i => snap.PathDevices[i]).ToList();
+            (paths, modes) = KeepPaths(paths, modes, keep);
+            snap = new LayoutSnapshot { PathDevices = devs, Description = snap.Description };
+        }
+
         var luidMap = new Dictionary<long, LUID>();
         for (int i = 0; i < paths.Length; i++)
         {
-            string dev = i < snap.PathDevices.Count ? snap.PathDevices[i] : "";
+            string dev = snap.PathDevices[i];
             if (!current.TryGetValue(dev, out var now))
                 throw new InvalidOperationException("En skärm i profilen är inte ansluten just nu.");
             luidMap[paths[i].targetInfo.adapterId.Value] = now.adapter;
@@ -678,8 +862,43 @@ public static class DisplayConfig
         for (int i = 0; i < modes.Length; i++)
             if (luidMap.TryGetValue(modes[i].adapterId.Value, out var l)) modes[i].adapterId = l;
 
-        int r = SetDisplayConfig((uint)paths.Length, paths, (uint)modes.Length, modes,
-            SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_SAVE_TO_DATABASE | SDC_ALLOW_CHANGES);
-        if (r != 0) throw Fail("SetDisplayConfig", r);
+        var fixedModes = modes.ToList();
+        for (int i = 0; i < paths.Length; i++)
+            if (paths.Count(p => p.sourceInfo.id == paths[i].sourceInfo.id && p.sourceInfo.adapterId.Value == paths[i].sourceInfo.adapterId.Value) == 1)
+                ApplyPreferred(ref paths[i], snap.PathDevices[i], fixedModes); // skärmens önskade upplösning/Hz
+        FixLayout(fixedModes); // utan en skärm kan det bli glapp eller ingen huvudskärm
+        int r = Set(paths, fixedModes.ToArray(), "profil");
+        if (r == 0) return;
+
+        // Gick inte exakt som sparat: bygg samma uppsättning (samma skärmar, samma dupliceringar) på vanligt sätt.
+        var targets = GetTargets();
+        var groups = Enumerable.Range(0, paths.Length)
+            .GroupBy(i => (paths[i].sourceInfo.adapterId.Value, paths[i].sourceInfo.id))
+            .Select(g => (IReadOnlyList<DisplayTarget>)g
+                .Select(i => targets.FirstOrDefault(t => string.Equals(t.DevicePath, snap.PathDevices[i], StringComparison.OrdinalIgnoreCase)))
+                .Where(t => t != null).Select(t => t!).ToList())
+            .Where(g => g.Count > 0).ToList();
+        ApplyGroups(groups);
+    }
+
+    /// <summary>Behåller bara vissa vägar och de lägen de använder (med nya index).</summary>
+    static (PATH_INFO[], MODE_INFO[]) KeepPaths(PATH_INFO[] paths, MODE_INFO[] modes, List<int> keep)
+    {
+        var newModes = new List<MODE_INFO>();
+        var map = new Dictionary<uint, uint>();
+        uint Remap(uint idx)
+        {
+            if (idx == INVALID || idx >= modes.Length) return INVALID;
+            if (!map.TryGetValue(idx, out var n)) { newModes.Add(modes[idx]); n = (uint)(newModes.Count - 1); map[idx] = n; }
+            return n;
+        }
+        var newPaths = keep.Select(i =>
+        {
+            var p = paths[i];
+            p.sourceInfo.modeInfoIdx = Remap(p.sourceInfo.modeInfoIdx);
+            p.targetInfo.modeInfoIdx = Remap(p.targetInfo.modeInfoIdx);
+            return p;
+        }).ToArray();
+        return (newPaths, newModes.ToArray());
     }
 }

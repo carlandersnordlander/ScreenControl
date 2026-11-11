@@ -32,6 +32,8 @@ public enum MsgType : byte
     Wheel = 24,       // delta, horisontell
     Key = 25,         // vk, scan, flaggor
     ReleaseAll = 26,  // släpp alla nedtryckta tangenter/knappar
+    SetInput = 27,    // server → klient: byt ingång på en skärm (JSON SetInputMsg)
+    InputResult = 28, // klient → server: svar (JSON InputResultMsg)
     Ping = 30,
     Pong = 31,
 }
@@ -68,6 +70,27 @@ public sealed class ClientMonitor
     public int W { get; set; }
     public int H { get; set; }
     public bool Primary { get; set; }
+    /// <summary>Windows namn på skärmen hos den datorn (\\.\DISPLAYn) – används lokalt för DDC/CI.</summary>
+    public string Gdi { get; set; } = "";
+    /// <summary>Index bland skärmar som delar samma bild (duplicering).</summary>
+    public int PhysIndex { get; set; }
+    /// <summary>Ingången skärmen visar enligt DDC/CI, sett från den datorn (null = svarar inte).</summary>
+    public int? Input { get; set; }
+}
+
+/// <summary>Be klienten byta ingång – den når skärmen när den här datorn inte gör det.</summary>
+public sealed class SetInputMsg
+{
+    public int Id { get; set; }
+    public string Key { get; set; } = "";   // EDID-nyckel
+    public int Code { get; set; }           // VCP 0x60-värde
+}
+
+public sealed class InputResultMsg
+{
+    public int Id { get; set; }
+    public bool Ok { get; set; }
+    public string? Error { get; set; }
 }
 
 /// <summary>

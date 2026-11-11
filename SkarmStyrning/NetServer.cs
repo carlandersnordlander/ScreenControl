@@ -30,6 +30,27 @@ public sealed class ClientSession
 
     /// <summary>Köar ett meddelande – anropas från tangentbords-/muskroken, får aldrig blockera.</summary>
     public void Post(MsgType type, byte[]? payload = null) => Outbox.TryAdd((type, payload ?? Array.Empty<byte>()));
+
+    readonly ConcurrentDictionary<int, TaskCompletionSource<InputResultMsg>> pending = new();
+    int nextRequest;
+
+    /// <summary>Be klienten byta ingång på skärmen med den här EDID-nyckeln.</summary>
+    public async Task<InputResultMsg> SetInput(string edidKey, byte code, TimeSpan timeout)
+    {
+        int id = Interlocked.Increment(ref nextRequest);
+        var tcs = new TaskCompletionSource<InputResultMsg>(TaskCreationOptions.RunContinuationsAsynchronously);
+        pending[id] = tcs;
+        Post(MsgType.SetInput, Proto.ToJson(new SetInputMsg { Id = id, Key = edidKey, Code = code }));
+        var done = await Task.WhenAny(tcs.Task, Task.Delay(timeout));
+        pending.TryRemove(id, out _);
+        return done == tcs.Task ? tcs.Task.Result
+            : new InputResultMsg { Id = id, Error = $"{Name} svarade inte – kör den den senaste versionen av klienten?" };
+    }
+
+    internal void Complete(InputResultMsg r)
+    {
+        if (pending.TryRemove(r.Id, out var tcs)) tcs.TrySetResult(r);
+    }
 }
 
 /// <summary>
@@ -268,6 +289,10 @@ public sealed class NetServer : IDisposable
                 {
                     session.Info = Proto.FromJson<ClientInfo>(p);
                     Changed?.Invoke();
+                }
+                else if (type == MsgType.InputResult)
+                {
+                    session.Complete(Proto.FromJson<InputResultMsg>(p));
                 }
             }
         }

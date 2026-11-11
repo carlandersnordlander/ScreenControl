@@ -328,9 +328,13 @@ function renderInspector() {
     </div>`;
 
   if (m.state === 'disconnected') {
+    // Visar skärmen en annan dator kan ingången ändå bytas – via den datorn.
+    if (m.input) html += inputSection(m);
     html += `
       <div class="section">
-        <div class="notice info">${ICON.info}<div>Skärmen är inte ansluten just nu. Den behåller sin plats i layouten och hamnar där när den kopplas in igen.</div></div>
+        <div class="notice info">${ICON.info}<div>${m.input
+          ? `Den här datorn ser inte skärmen just nu, men <b>${esc(m.input.via)}</b> gör det. Byt ingång ovan för att få tillbaka den.`
+          : 'Skärmen är inte ansluten just nu. Den behåller sin plats i layouten och hamnar där när den kopplas in igen.'}</div></div>
         <div class="row-actions"><button class="btn danger" data-act="forget">${ICON.trash}Glöm skärmen</button></div>
       </div>`;
     box.innerHTML = html;
@@ -376,16 +380,27 @@ function renderInspector() {
       </div>`;
   }
 
-  // Ingång
-  html += `<div class="section"><h4>Ingång ${pickingHome ? '<button class="link" data-act="cancelPick">Avbryt</button>' : ''}</h4>`;
+  html += inputSection(m);
+  html += modeSection(m);
   const inp = m.input;
-  if (m.state !== 'on') {
-    html += `<div class="notice info">${ICON.info}<div>Ingången kan bara styras när skärmen är på i Windows.</div></div>`;
-  } else if (!inp || inp.loading) {
+
+  // Detaljer
+  html += detailsSection(m, inp);
+  box.innerHTML = html;
+}
+
+/** Ingångar – direkt härifrån, eller via en ansluten dator när den här datorn inte når skärmen. */
+function inputSection(m) {
+  let html = `<div class="section"><h4>Ingång ${pickingHome ? '<button class="link" data-act="cancelPick">Avbryt</button>' : ''}</h4>`;
+  const inp = m.input;
+  if (!inp) {
+    html += `<div class="notice info">${ICON.info}<div>Ingången kan styras när skärmen är på i Windows, eller när en ansluten dator ser den.</div></div>`;
+  } else if (inp.loading) {
     html += `<div class="inputs"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>`;
   } else {
     if (pickingHome) html += `<div class="notice info" style="margin-bottom:10px">${ICON.home}<div>Klicka på den ingång som <b>den här datorn</b> sitter på.</div></div>`;
-    if (inp.error) html += `<div class="notice" style="margin-bottom:10px">${ICON.warn}<div>${esc(inp.error)}. Du kan ändå prova att byta – vissa skärmar tar emot kommandon men svarar inte.</div></div>`;
+    if (inp.via) html += `<div class="notice info via" style="margin-bottom:10px">${ICON.laptop}<div>Skärmen visar <b>${esc(inp.via)}</b>. Byten skickas via den datorn, eftersom den här datorn inte når skärmen just nu.</div></div>`;
+    else if (inp.error) html += `<div class="notice" style="margin-bottom:10px">${ICON.warn}<div>${esc(inp.error)}. Du kan ändå prova att byta – vissa skärmar tar emot kommandon men svarar inte.</div></div>`;
     html += '<div class="inputs">';
     for (const o of inp.options || []) {
       const cur = o.code === inp.current;
@@ -404,12 +419,41 @@ function renderInspector() {
     html += '</div>';
     const homeName = (inp.options || []).find(o => o.code === inp.home)?.name;
     html += `<div class="hint"><span>${homeName ? `Datorn sitter på <b>${esc(homeName)}</b>.` : 'Appen vet inte säkert vilken ingång datorn sitter på.'}</span><button class="link" data-act="pickHome">${homeName ? 'Ändra' : 'Ange'}</button></div>`;
-    if (inp.isHome === false) html += `<div class="notice" style="margin-top:10px">${ICON.warn}<div>Skärmen visar en annan källa just nu.</div></div>`;
+    if (inp.isHome === false && !inp.via) html += `<div class="notice" style="margin-top:10px">${ICON.warn}<div>Skärmen visar en annan källa just nu.</div></div>`;
   }
-  html += '</div>';
+  return html + '</div>';
+}
 
-  // Detaljer
-  html += `
+/** Upplösning och Hz – valet sparas och sätts tillbaka efter byten. */
+function modeSection(m) {
+  const md = m.modes;
+  if (m.state !== 'on' || !md || !md.resolutions?.length) return '';
+  const cur = md.current || { w: m.width, h: m.height, hz: m.hz };
+  const pref = md.preferred;
+  const resKey = r => `${r.w}x${r.h}`;
+  const selRes = md.resolutions.find(r => r.w === cur.w && r.h === cur.h) || md.resolutions[0];
+  const hzList = selRes.hz;
+  const prefText = pref ? `${pref.w}×${pref.h} @ ${pref.hz} Hz` : null;
+  const mismatch = pref && (pref.w !== cur.w || pref.h !== cur.h || pref.hz !== cur.hz);
+  return `
+    <div class="section">
+      <h4>Upplösning och Hz</h4>
+      <div class="mode-row">
+        <select class="select" id="resSel">${md.resolutions.map(r =>
+          `<option value="${resKey(r)}" ${r === selRes ? 'selected' : ''}>${r.w} × ${r.h}${r === md.resolutions[0] ? '  (högst)' : ''}</option>`).join('')}</select>
+        <select class="select hz" id="hzSel">${hzList.map(h => `<option value="${h}" ${h === cur.hz ? 'selected' : ''}>${h} Hz</option>`).join('')}</select>
+      </div>
+      <div class="hint"><span>${pref
+        ? (pref.pinned ? `Låst till <b>${prefText}</b> – sätts tillbaka efter byten.` : `Sparas automatiskt: <b>${prefText}</b> (bästa läget skärmen haft).`)
+        : 'Välj ett läge så sparas det och sätts tillbaka efter byten.'}</span>
+        ${pref?.pinned ? '<button class="link" data-act="autoMode">Automatiskt</button>' : ''}</div>
+      ${mismatch ? `<div class="notice" style="margin-top:10px">${ICON.warn}<div>Skärmen står i ${cur.w}×${cur.h} @ ${cur.hz} Hz just nu.
+        <div style="margin-top:8px"><button class="btn small primary" data-act="restoreMode">Byt till ${prefText}</button></div></div></div>` : ''}
+    </div>`;
+}
+
+function detailsSection(m, inp) {
+  return `
     <div class="section">
       <h4>Detaljer</h4>
       <dl class="details">
@@ -418,11 +462,9 @@ function renderInspector() {
         <dt>Uppdatering</dt><dd>${m.hz ? m.hz + ' Hz' : '–'}</dd>
         <dt>Position</dt><dd>${posOf(m).x}, ${posOf(m).y}</dd>
         <dt>Windows-nummer</dt><dd>${m.windowsNumber ?? '–'}</dd>
-        <dt>DDC/CI</dt><dd>${m.state !== 'on' ? '–' : !inp || inp.loading ? '…' : inp.error ? 'Svarar inte' : 'Ja'}</dd>
+        <dt>DDC/CI</dt><dd>${m.state !== 'on' ? '–' : !inp || inp.loading ? '…' : inp.via ? 'Via ' + esc(inp.via) : inp.error ? 'Svarar inte' : 'Ja'}</dd>
       </dl>
     </div>`;
-
-  box.innerHTML = html;
 }
 
 $('#inspector').addEventListener('click', e => {
@@ -447,6 +489,11 @@ $('#inspector').addEventListener('click', e => {
   if (act === 'primary') saveLayout(true, m.id);
   if (act === 'only') call('only', { id: m.id }).catch(() => {});
   if (act === 'forget') { call('forget', { id: m.id }).catch(() => {}); selectedId = null; }
+  if (act === 'autoMode') call('autoMode', { id: m.id }).catch(() => {});
+  if (act === 'restoreMode' && m.modes?.preferred) {
+    const p = m.modes.preferred;
+    call('setMode', { id: m.id, w: p.w, h: p.h, hz: p.hz }).catch(() => {});
+  }
   if (act === 'pickHome') { pickingHome = true; renderInspector(); }
   if (act === 'cancelPick') { pickingHome = false; renderInspector(); }
 });
@@ -454,12 +501,25 @@ $('#inspector').addEventListener('click', e => {
 $('#inspector').addEventListener('change', e => {
   if (e.target.id === 'cloneWith') applyMode(selectedId, 'clone', e.target.value);
   if (e.target.id === 'ownerSel') call('setOwner', { id: selectedId, owner: e.target.value }).catch(() => {});
+  if (e.target.id === 'resSel' || e.target.id === 'hzSel') {
+    const m = byId(selectedId);
+    const [w, h] = $('#resSel').value.split('x').map(Number);
+    const res = m?.modes?.resolutions.find(r => r.w === w && r.h === h);
+    if (!res) return;
+    // Byter man upplösning: ta samma Hz om den finns, annars den högsta.
+    const wanted = Number($('#hzSel').value);
+    const hz = e.target.id === 'hzSel' || res.hz.includes(wanted) ? (res.hz.includes(wanted) ? wanted : res.hz[0]) : res.hz[0];
+    call('setMode', { id: selectedId, w, h, hz }).catch(() => {});
+  }
 });
 
 /* ================= Datorer ================= */
 function renderComputers() {
   const box = $('#computers');
   const cs = state.computers || [];
+  const hk = state.settings.hotkeys?.home?.keys || [];
+  $('#btnAllHome').hidden = !cs.some(c => c.connected);
+  $('#btnAllHome').title = 'Byter tillbaka alla skärmar till den här datorn – via den andra datorn om det behövs' + (hk.length ? ` (${hk.join('+')})` : '');
   const n = state.net;
   let html = '';
   if (n?.error) html += `<div class="notice" style="grid-column:1/-1">${ICON.warn}<div>${esc(n.error)}</div></div>`;
@@ -513,6 +573,7 @@ $('#computers').addEventListener('click', e => {
 });
 
 $('#btnAddComputer').onclick = openPairing;
+$('#btnAllHome').onclick = () => call('allHome').catch(() => {});
 
 function firewallNotice() {
   const pub = state.net?.publicNetwork;
@@ -595,6 +656,7 @@ function renderProfiles() {
       </div>
       <div class="profile-actions">
         <button class="btn primary small" data-act="apply">${ICON.play}Använd</button>
+        <button class="btn small ghost" data-act="edit" title="Redigera profilen utan att byta till den">${ICON.edit}</button>
         <button class="btn small ghost" data-act="copy" title="Kopiera genvägskommando">${ICON.copy}</button>
         <button class="btn small ghost danger" data-act="delete" title="Ta bort">${ICON.trash}</button>
       </div>
@@ -608,6 +670,7 @@ $('#profiles').addEventListener('click', e => {
   const name = card.dataset.name;
   if (act === 'apply') call('applyProfile', { name }).catch(() => {});
   if (act === 'copy') call('copyCommand', { name }).catch(() => {});
+  if (act === 'edit') editProfile(name);
   if (act === 'hotkey') {
     const p = (state.profiles || []).find(x => x.name === name);
     recordHotkey(`Kortkommando för ”${name}”`, p?.hotkey, value => call('setProfileHotkey', { name, hotkey: value }));
@@ -635,6 +698,103 @@ $('#btnNewProfile').onclick = () => {
       name.addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
     });
 };
+
+/* ================= Redigera profil ================= */
+async function editProfile(name) {
+  let pr;
+  try { pr = await call('getProfile', { name }); } catch { return; }
+  const mons = pr.monitors;
+  const nameOf = dev => mons.find(m => m.dev === dev)?.name || 'Skärm';
+
+  const resOptions = m => {
+    const list = [];
+    for (const r of m.resolutions || []) for (const hz of r.hz) list.push({ w: r.w, h: r.h, hz });
+    if (m.width && !list.some(o => o.w === m.width && o.h === m.height && o.hz === m.hz)) list.unshift({ w: m.width, h: m.height, hz: m.hz });
+    const sel = m.width ? `${m.width}|${m.height}|${m.hz}` : '';
+    return `<option value="">Standard${m.preferred ? ` (${esc(m.preferred)})` : ''}</option>`
+      + list.map(o => { const v = `${o.w}|${o.h}|${o.hz}`; return `<option value="${v}" ${v === sel ? 'selected' : ''}>${o.w} × ${o.h} @ ${o.hz} Hz</option>`; }).join('');
+  };
+  const modeOptions = m => `
+    <option value="off" ${m.mode === 'off' ? 'selected' : ''}>Av</option>
+    <option value="extend" ${m.mode === 'extend' ? 'selected' : ''}>På (utökad)</option>
+    ${mons.filter(o => o.dev !== m.dev).map(o => `<option value="clone:${esc(o.dev)}" ${m.mode === 'clone' && m.cloneOf === o.dev ? 'selected' : ''}>Duplicera ${esc(o.name)}</option>`).join('')}`;
+  const inputOptions = m => `<option value="">Ändra inte</option>` + m.inputs.map(o =>
+    `<option value="${o.code}" ${m.input === o.code ? 'selected' : ''}>${esc(o.name)}${o.computer ? ' – ' + esc(o.computer) : ''}</option>`).join('');
+
+  modal(`
+    <h3>Redigera profil</h3>
+    <p>Ändringarna sparas utan att profilen läggs på. Placeringen följer skärmlayouten i huvudfönstret.</p>
+    <div class="field"><label for="peName">Namn</label><input class="input" id="peName" value="${esc(pr.name)}" maxlength="40"></div>
+    <div class="toggle-row"><div><strong>Ändra skärmlayout</strong><span>Vilka skärmar som är på, huvudskärm och upplösning. Av = profilen byter bara ingångar.</span></div>
+      <label class="switch"><input type="checkbox" id="peLayout" ${pr.hasLayout ? 'checked' : ''}><i></i></label></div>
+    <div class="pe-list" id="peList">
+      ${mons.map(m => `
+        <div class="pe-mon" data-dev="${esc(m.dev)}">
+          <div class="pe-head">
+            <span class="pe-num">${m.number}</span>
+            <div class="pe-title"><b>${esc(m.name)}</b><span>${m.connected ? '' : 'Inte ansluten just nu'}</span></div>
+            <label class="pe-primary" title="Huvudskärm i profilen"><input type="radio" name="pePrim" value="${esc(m.dev)}" ${pr.primary === m.dev ? 'checked' : ''}>${ICON.star}Huvudskärm</label>
+          </div>
+          <div class="pe-grid">
+            <label><span>Visning</span><select class="select pe-mode">${modeOptions(m)}</select></label>
+            <label><span>Upplösning och Hz</span><select class="select pe-res">${resOptions(m)}</select></label>
+            <label><span>Ingång</span><select class="select pe-input">${inputOptions(m)}</select></label>
+          </div>
+        </div>`).join('')}
+    </div>
+    <div class="modal-actions">
+      <button class="btn ghost" data-close>Avbryt</button>
+      <span style="flex:1"></span>
+      <button class="btn" id="peSave">Spara</button>
+      <button class="btn primary" id="peApply">Spara och använd</button>
+    </div>`,
+    root => {
+      root.querySelector('.modal').classList.add('wide');
+      const layoutOn = () => $('#peLayout', root).checked;
+      const sync = () => {
+        for (const row of root.querySelectorAll('.pe-mon')) {
+          const mode = row.querySelector('.pe-mode').value;
+          const ext = layoutOn() && mode === 'extend';
+          row.querySelector('.pe-mode').disabled = !layoutOn();
+          row.querySelector('.pe-res').disabled = !ext;
+          row.querySelector('.pe-primary input').disabled = !ext;
+          row.querySelector('.pe-primary').classList.toggle('disabled', !ext);
+          row.classList.toggle('off', layoutOn() && mode === 'off');
+        }
+        // Huvudskärmen måste vara på – flytta valet om den stängs av.
+        const prim = root.querySelector('input[name="pePrim"]:checked');
+        if (layoutOn() && (!prim || prim.disabled)) {
+          const first = [...root.querySelectorAll('input[name="pePrim"]')].find(r => !r.disabled);
+          if (first) first.checked = true;
+        }
+      };
+      root.addEventListener('change', sync);
+      sync();
+
+      const collect = apply => {
+        const monitors = [...root.querySelectorAll('.pe-mon')].map(row => {
+          const mv = row.querySelector('.pe-mode').value;
+          const rv = row.querySelector('.pe-res').value;
+          const [w, h, hz] = rv ? rv.split('|').map(Number) : [null, null, null];
+          return { dev: row.dataset.dev, mode: mv.startsWith('clone:') ? 'clone' : mv, cloneOf: mv.startsWith('clone:') ? mv.slice(6) : null,
+                   width: mv === 'extend' ? w : null, height: mv === 'extend' ? h : null, hz: mv === 'extend' ? hz : null };
+        });
+        const inputs = {};
+        for (const row of root.querySelectorAll('.pe-mon')) {
+          const v = row.querySelector('.pe-input').value;
+          if (v !== '') inputs[row.dataset.dev] = Number(v);
+        }
+        if (layoutOn() && !monitors.some(m => m.mode !== 'off')) { toast('Minst en skärm måste vara på i profilen.', 'error'); return; }
+        if (!layoutOn() && !Object.keys(inputs).length) { toast('Profilen gör ingenting – slå på skärmlayout eller välj minst en ingång.', 'error'); return; }
+        call('saveProfileEdit', {
+          original: pr.name, name: $('#peName', root).value, hasLayout: layoutOn(),
+          primary: root.querySelector('input[name="pePrim"]:checked')?.value || null, monitors, inputs, apply,
+        }).then(() => closeModal()).catch(() => {});
+      };
+      $('#peSave', root).onclick = () => collect(false);
+      $('#peApply', root).onclick = () => collect(true);
+    });
+}
 
 /* ================= Kortkommandon ================= */
 const kbdHtml = keys => keys.map(k => `<kbd>${esc(k)}</kbd>`).join('<span class="plus">+</span>');
@@ -749,6 +909,7 @@ function openSettings() {
     <div class="group">
       <h4>Kortkommandon</h4>
       <div class="hk-row"><div><strong>Nästa profil</strong><span>Växlar runt mellan dina profiler</span></div>${hotkeyButton(s.hotkeys?.next, 'hk', 'data-which="next"')}</div>
+      <div class="hk-row"><div><strong>Alla skärmar hit</strong><span>Byt tillbaka alla skärmar till den här datorn</span></div>${hotkeyButton(s.hotkeys?.home, 'hk', 'data-which="home"')}</div>
       <div class="hk-row"><div><strong>Utöka alla</strong><span>Smart utökning till skärmarna som visar datorn</span></div>${hotkeyButton(s.hotkeys?.extend, 'hk', 'data-which="extend"')}</div>
       <p class="about" style="margin-top:8px">Varje profil har också ett eget kortkommando – ändra det på profilkortet. Kortkommandona fungerar i hela Windows så länge appen körs.</p>
     </div>
@@ -779,7 +940,7 @@ function openSettings() {
       $('#sWin', root).onclick = () => call('openWindowsSettings').catch(() => {});
       for (const b of root.querySelectorAll('[data-act="hk"]')) b.onclick = () => {
         const which = b.dataset.which;
-        recordHotkey(which === 'next' ? 'Kortkommando: Nästa profil' : 'Kortkommando: Utöka alla',
+        recordHotkey({ next: 'Kortkommando: Nästa profil', home: 'Kortkommando: Alla skärmar hit', extend: 'Kortkommando: Utöka alla' }[which],
           state.settings.hotkeys?.[which],
           value => call('setHotkey', { which, hotkey: value }),
           () => setTimeout(openSettings, 0));

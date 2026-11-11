@@ -82,16 +82,40 @@ sealed class ClientLink : IDisposable
 
     void OnDisplayChanged(object? s, EventArgs e) => _ = SendInfo();
 
-    async Task SendInfo()
+    string lastInfo = "";
+
+    /// <summary>Skickar skärmarna (med ingång enligt DDC/CI) – bara om något ändrats, om inte force.</summary>
+    async Task SendInfo(bool force = true)
     {
         var ch = channel;
         if (ch == null) return;
         try
         {
-            var info = new ClientInfo { Name = Config.Name, Monitors = LocalMonitors.Read() };
-            await ch.Send(MsgType.Info, Proto.ToJson(info));
+            var info = new ClientInfo { Name = Config.Name, Monitors = await Task.Run(() => LocalMonitors.Read(readInputs: true)) };
+            var bytes = Proto.ToJson(info);
+            var text = System.Text.Encoding.UTF8.GetString(bytes);
+            if (!force && text == lastInfo) return;
+            lastInfo = text;
+            await ch.Send(MsgType.Info, bytes);
         }
         catch { }
+    }
+
+    /// <summary>Servern ber oss byta ingång på en skärm (som den inte själv når just nu).</summary>
+    async Task HandleSetInput(SecureChannel ch, SetInputMsg req, CancellationToken ct)
+    {
+        var result = new InputResultMsg { Id = req.Id };
+        try
+        {
+            var mon = LocalMonitors.Read().FirstOrDefault(m => m.Key == req.Key)
+                      ?? throw new InvalidOperationException("Skärmen är inte ansluten till " + Config.Name + ".");
+            await Task.Run(() => Ddc.SetInput(mon.Gdi, mon.PhysIndex, (byte)req.Code), ct);
+            result.Ok = true;
+        }
+        catch (Exception ex) { result.Error = ex.Message; }
+        try { await ch.Send(MsgType.InputResult, Proto.ToJson(result), ct); } catch { }
+        // Rapportera det nya läget snart (skärmen kan behöva en stund på sig).
+        _ = Task.Run(async () => { await Task.Delay(1500); await SendInfo(force: false); });
     }
 
     async Task Loop(CancellationToken ct)
@@ -127,6 +151,8 @@ sealed class ClientLink : IDisposable
             try { await Task.Delay(5000, ct); } catch { return; }
         }
     }
+
+    int pings;
 
     async Task Receive(SecureChannel ch, CancellationToken ct)
     {
@@ -166,6 +192,11 @@ sealed class ClientLink : IDisposable
                     break;
                 case MsgType.Ping:
                     await ch.Send(MsgType.Pong, p, ct);
+                    // Var 10:e sekund (varannan ping): skicka skärmläget om ingångarna ändrats.
+                    if (++pings % 2 == 0) _ = SendInfo(force: false);
+                    break;
+                case MsgType.SetInput:
+                    _ = HandleSetInput(ch, Proto.FromJson<SetInputMsg>(p), ct);
                     break;
             }
         }

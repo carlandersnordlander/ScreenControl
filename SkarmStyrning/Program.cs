@@ -43,6 +43,35 @@ static class Program
                     ApplicationConfiguration.Initialize();
                     Application.Run(new AppWindow(Arg(1), args.Length > 2 ? args[2] : null, args.Length > 3 ? args[3] : null));
                     return 0;
+                case "--diag": // felsökning: testar layouter med SDC_VALIDATE, ändrar ingenting
+                {
+                    var log = DisplayConfig.ValidateLog = new List<string>();
+                    var ts = DisplayConfig.GetTargets();
+                    List<IReadOnlyList<DisplayTarget>> Singles(IEnumerable<DisplayTarget> xs) => xs.Select(x => (IReadOnlyList<DisplayTarget>)new[] { x }).ToList();
+                    void Try(string name, Action a)
+                    {
+                        log.Add("== " + name);
+                        try { a(); log.Add("  => OK"); } catch (Exception ex) { log.Add("  => FEL: " + ex.Message); }
+                    }
+                    log.Add("Skärmar: " + string.Join(", ", ts.Select(x => $"{x.Label}({(x.Active ? "på" : "av")}, t{x.TargetId})")));
+                    Try("Utöka alla", () => DisplayConfig.ApplyGroups(Singles(ts)));
+                    foreach (var skip in ts) Try("Alla utom " + skip.Label, () => DisplayConfig.ApplyGroups(Singles(ts.Where(x => x != skip))));
+                    foreach (var only in ts) Try("Endast " + only.Label, () => DisplayConfig.ApplyGroups(Singles(new[] { only })));
+                    Try("Duplicera alla", () => DisplayConfig.ApplyGroups(new[] { (IReadOnlyList<DisplayTarget>)ts }));
+                    foreach (var prof in ProfileStore.Load())
+                    {
+                        var spec = prof.Spec ?? (prof.Layout != null ? DisplayConfig.SpecFromSnapshot(prof.Layout) : null);
+                        if (spec == null) continue;
+                        log.Add($"   ({prof.Name}: {spec.Describe()}, huvudskärm {spec.Monitors.FirstOrDefault(m => m.Dev == spec.Primary)?.Name})");
+                        Try("Profil " + prof.Name, () =>
+                        {
+                            var errs = Actions.ApplySpec(spec, validateOnly: true);
+                            if (errs.Count > 0) throw new InvalidOperationException(string.Join("; ", errs));
+                        });
+                    }
+                    File.WriteAllLines(Arg(1), log);
+                    return 0;
+                }
                 case "--status":
                     var act = DisplayConfig.GetTargets().Where(x => x.Active).ToList();
                     foreach (var d in act)

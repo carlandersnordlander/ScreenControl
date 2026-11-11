@@ -38,6 +38,14 @@ public static class LocalMonitors
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string path;
     }
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct SourceName
+    {
+        public uint type, size; public Luid adapter; public uint id;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string gdi;
+    }
+
+    [DllImport("user32.dll", EntryPoint = "DisplayConfigGetDeviceInfo")] static extern int GetSourceName(ref SourceName req);
     [DllImport("user32.dll")] static extern int GetDisplayConfigBufferSizes(uint flags, out uint np, out uint nm);
     [DllImport("user32.dll")] static extern int QueryDisplayConfig(uint flags, ref uint np, [Out] PathInfo[] p, ref uint nm, [Out] ModeInfo[] m, IntPtr topo);
     [DllImport("user32.dll")] static extern int DisplayConfigGetDeviceInfo(ref TargetName req);
@@ -45,7 +53,8 @@ public static class LocalMonitors
     /// <summary>"MMMM-PPPP" ur EDID: tillverkare och produktkod.</summary>
     public static string EdidKey(ushort manufacturer, ushort product) => $"{manufacturer:X4}-{product:X4}";
 
-    public static List<ClientMonitor> Read()
+    /// <param name="readInputs">Läs även vilken ingång varje skärm visar (DDC/CI, ca 0,1 s per skärm).</param>
+    public static List<ClientMonitor> Read(bool readInputs = false)
     {
         const uint QDC_ONLY_ACTIVE_PATHS = 2;
         PathInfo[] paths; ModeInfo[] modes;
@@ -63,19 +72,31 @@ public static class LocalMonitors
         }
 
         var list = new List<ClientMonitor>();
-        foreach (var p in paths)
+        for (int i = 0; i < paths.Length; i++)
         {
+            var p = paths[i];
             if (p.srcModeIdx >= modes.Length || modes[p.srcModeIdx].infoType != 1) continue;
             var m = modes[p.srcModeIdx];
             var tn = new TargetName { type = 2, size = (uint)Marshal.SizeOf<TargetName>(), adapter = p.tgtAdapter, id = p.tgtId };
             if (DisplayConfigGetDeviceInfo(ref tn) != 0) continue;
-            list.Add(new ClientMonitor
+            var sn = new SourceName { type = 1, size = (uint)Marshal.SizeOf<SourceName>(), adapter = p.srcAdapter, id = p.srcId };
+            string gdi = GetSourceName(ref sn) == 0 ? sn.gdi : "";
+            int physIndex = paths.Take(i).Count(o => o.srcAdapter.Low == p.srcAdapter.Low && o.srcAdapter.High == p.srcAdapter.High && o.srcId == p.srcId);
+            var cm = new ClientMonitor
             {
                 Key = EdidKey(tn.mfg, tn.product),
                 Name = string.IsNullOrWhiteSpace(tn.friendly) ? "Skärm" : tn.friendly,
                 X = m.x, Y = m.y, W = (int)m.width, H = (int)m.height,
                 Primary = m.x == 0 && m.y == 0,
-            });
+                Gdi = gdi,
+                PhysIndex = physIndex,
+            };
+            if (readInputs && gdi != "")
+            {
+                var st = Ddc.ReadStatus(gdi, physIndex);
+                if (st.Input is byte b) cm.Input = b;
+            }
+            list.Add(cm);
         }
         return list;
     }

@@ -16,6 +16,7 @@ public sealed class AppSettings
     public string Theme { get; set; } = "system";
     public string HotkeyNextProfile { get; set; } = "Ctrl+Shift+Alt+P";
     public string HotkeyExtend { get; set; } = "Ctrl+Shift+Alt+E";
+    public string HotkeyHome { get; set; } = "Ctrl+Shift+Alt+H";
     public string? LastProfile { get; set; }
     /// <summary>Dela mus och tangentbord med anslutna datorer.</summary>
     public bool ShareInput { get; set; } = true;
@@ -71,6 +72,12 @@ public static class Settings
     {
         get { lock (Gate) return S.HotkeyExtend; }
         set { lock (Gate) { S.HotkeyExtend = value; Save(); } }
+    }
+
+    public static string HotkeyHome
+    {
+        get { lock (Gate) return S.HotkeyHome; }
+        set { lock (Gate) { S.HotkeyHome = value; Save(); } }
     }
 
     public static string? LastProfile

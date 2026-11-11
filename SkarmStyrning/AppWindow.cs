@@ -70,7 +70,12 @@ public sealed partial class AppWindow : Form
         Resize += (_, _) => { if (WindowState == FormWindowState.Minimized && screenshotPath == null) Hide(); };
 
         // Ändringar utanför appen (Windows inställningar, Win+P, skärmar som kopplas in/ur).
-        displayTimer.Tick += async (_, _) => { displayTimer.Stop(); if (!await AutoTick()) await RefreshAsync(); };
+        displayTimer.Tick += async (_, _) =>
+        {
+            displayTimer.Stop();
+            if (!await AutoTick()) await RefreshAsync();
+            await EnforcePreferredModes(); // t.ex. 4K/144 Hz tillbaka efter att en skärm kommit tillbaka
+        };
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
         Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
 
@@ -193,6 +198,13 @@ public sealed partial class AppWindow : Form
             bool ok = await Quietly("extend", null);
             OsdOverlay.Show("Utöka alla", ok ? "klar ✓" : "gick inte helt – se appen");
         });
+        Reg(Settings.HotkeyHome, async () =>
+        {
+            if (op.CurrentCount == 0) { OsdOverlay.Show("Vänta lite", "En ändring pågår redan …"); return; }
+            OsdOverlay.Show("Alla skärmar hit", "Byter tillbaka ingångarna …");
+            bool ok = await Quietly("allHome", null);
+            OsdOverlay.Show("Alla skärmar hit", ok ? "klar ✓" : "gick inte helt – se appen");
+        });
         foreach (var p in profiles)
         {
             var name = p.Name;
@@ -239,6 +251,7 @@ public sealed partial class AppWindow : Form
     {
         yield return ("next", "Nästa profil", Settings.HotkeyNextProfile);
         yield return ("extend", "Utöka alla", Settings.HotkeyExtend);
+        yield return ("home", "Alla skärmar hit", Settings.HotkeyHome);
         foreach (var p in profiles) yield return ("profile:" + p.Name, $"profilen \"{p.Name}\"", p.Hotkey ?? "");
     }
 
@@ -348,6 +361,9 @@ public sealed partial class AppWindow : Form
         try { msg = JsonNode.Parse(json); } catch { return; }
         int id = msg?["id"]?.GetValue<int>() ?? 0;
         string cmd = msg?["cmd"]?.GetValue<string>() ?? "";
+        // Ett nytt läge väljs – ett profilvalt läge (upplösning/Hz) gäller inte längre.
+        if (cmd is "extend" or "clone" or "only" or "applyModes" or "allHome")
+            lock (Actions.ProfileModes) Actions.ProfileModes.Clear();
         try
         {
             var result = await Dispatch(cmd, msg?["args"]);
@@ -427,12 +443,16 @@ public sealed partial class AppWindow : Form
 
             case "setInput":
             {
-                var t = Find(Str("id"));
+                string dev = Str("id");
+                string label = targets.FirstOrDefault(x => x.Id == dev)?.Label
+                    ?? PositionMemory.Items().FirstOrDefault(i => i.Dev == dev)?.Name ?? "Skärmen";
                 byte code = (byte)(a?["code"]?.GetValue<int>() ?? 0);
-                await DisplayOp($"Byter {t.Label} till {Ddc.InputName(code)}", () =>
+                await DisplayOp($"Byter {label} till {Ddc.InputName(code)}", () =>
                 {
-                    Ddc.SetInput(t.GdiName, t.PhysIndex, code);
-                    return $"{t.Label} visar nu {Ddc.InputName(code)}.";
+                    // Härifrån om det går, annars via datorn som skärmen visar just nu.
+                    var err = SetInputRouted(dev, code).GetAwaiter().GetResult();
+                    if (err != null) throw new InvalidOperationException($"{label}: {err}");
+                    return $"{label} visar nu {Ddc.InputName(code)}.";
                 });
                 return null;
             }
@@ -496,7 +516,7 @@ public sealed partial class AppWindow : Form
                 Settings.LastProfile = p.Name;
                 await DisplayOp($"Använder profilen \"{p.Name}\"", () =>
                 {
-                    if (p.Layout != null) Settings.ExtendIntent = false;
+                    if (p.Layout != null || p.Spec != null) Settings.ExtendIntent = false;
                     Actions.ApplyProfile(p);
                     return $"Profilen \"{p.Name}\" är aktiv.";
                 });
@@ -527,8 +547,11 @@ public sealed partial class AppWindow : Form
             case "setHotkey":
             {
                 string which = Str("which");
-                string value = CheckHotkey(a?["hotkey"]?.GetValue<string>(), which == "next" ? "next" : "extend");
-                if (which == "next") Settings.HotkeyNextProfile = value; else Settings.HotkeyExtend = value;
+                if (which is not ("next" or "extend" or "home")) throw new InvalidOperationException("Okänt kortkommando.");
+                string value = CheckHotkey(a?["hotkey"]?.GetValue<string>(), which);
+                if (which == "next") Settings.HotkeyNextProfile = value;
+                else if (which == "home") Settings.HotkeyHome = value;
+                else Settings.HotkeyExtend = value;
                 hotkeysSuspended = false;
                 RegisterHotkeys();
                 BuildTrayMenu();
@@ -572,6 +595,10 @@ public sealed partial class AppWindow : Form
 
             default:
                 var (handled, result) = await KvmDispatch(cmd, a);
+                if (handled) return result;
+                (handled, result) = await ModesDispatch(cmd, a);
+                if (handled) return result;
+                (handled, result) = await ProfilesDispatch(cmd, a);
                 if (handled) return result;
                 throw new InvalidOperationException("Okänt kommando: " + cmd);
         }
@@ -644,7 +671,7 @@ public sealed partial class AppWindow : Form
         if (!withLayout && !withInputs) throw new InvalidOperationException("Välj minst en sak att spara.");
 
         var p = new Profile { Name = name };
-        if (withLayout) p.Layout = await Task.Run(DisplayConfig.TakeSnapshot);
+        if (withLayout) p.Spec = await Task.Run(DisplayConfig.SpecFromCurrent);
         if (withInputs)
         {
             p.Inputs = new();
@@ -718,9 +745,10 @@ public sealed partial class AppWindow : Form
                 height = t?.HasGeometry == true ? t.Height : p.h,
                 hz = t?.Hz ?? 0,
                 cloneOf,
-                input = InputState(t),
-                owner = OwnerState(t),
-                computers = ComputersOn(t),
+                input = InputState(p.id, t),
+                owner = OwnerState(p.id, t),
+                computers = ComputersOn(p.id, t),
+                modes = ModesState(p.id, t),
             };
         }).ToList();
 
@@ -730,7 +758,7 @@ public sealed partial class AppWindow : Form
             profiles = profiles.Select(p => new
             {
                 name = p.Name,
-                layout = p.Layout?.Description,
+                layout = p.Spec?.Describe() ?? p.Layout?.Description,
                 inputs = p.InputLabels?.Values.ToList() ?? new List<string>(),
                 hotkey = HotkeyState(p.Hotkey),
                 active = p.Name == Settings.LastProfile,
@@ -740,7 +768,7 @@ public sealed partial class AppWindow : Form
                 autoAdapt = Settings.AutoAdapt,
                 extendIntent = Settings.ExtendIntent,
                 theme = Settings.Theme,
-                hotkeys = new { next = HotkeyState(Settings.HotkeyNextProfile), extend = HotkeyState(Settings.HotkeyExtend) },
+                hotkeys = new { next = HotkeyState(Settings.HotkeyNextProfile), extend = HotkeyState(Settings.HotkeyExtend), home = HotkeyState(Settings.HotkeyHome) },
                 shareInput = Settings.ShareInput,
             },
             computers = ComputersState(),
@@ -758,10 +786,13 @@ public sealed partial class AppWindow : Form
         failed = !string.IsNullOrEmpty(combo) && failedHotkeys.Contains(combo),
     };
 
-    object? InputState(DisplayTarget? t)
+    object? InputState(string dev, DisplayTarget? t)
     {
-        if (t is not { Active: true }) return null;
+        var via = ClientView(dev, t);
+        if (t is not { Active: true }) return via is { } v ? ClientInputState(dev, v) : null;
         if (!inputs.TryGetValue(t.Id, out var info)) return new { loading = true };
+        // Den här datorn får inget svar (skärmen visar troligen en annan dator) – visa klientens bild.
+        if (info.Current == null && via is { } v2) return ClientInputState(dev, v2);
         var codes = info.Supported.Count > 0 ? info.Supported.ToList() : Ddc.CommonInputs.ToList();
         if (info.Current is uint c && !codes.Contains((byte)c)) codes.Insert(0, (byte)c);
         bool? isHome = info.Current is uint cc ? Settings.IsHome(t, (byte)cc) : null;
@@ -773,7 +804,27 @@ public sealed partial class AppWindow : Form
             fromMonitor = info.CapsFromMonitor,
             home = Settings.HomeInput(t.DevicePath),
             isHome,
-            options = codes.Select(x => new { code = x, name = Ddc.InputName(x), kind = Kind(x), computer = ComputerOnInput(t, x) }),
+            options = codes.Select(x => new { code = x, name = Ddc.InputName(x), kind = Kind(x), computer = ComputerOnInput(dev, x) }),
+            via = (string?)null,
+        };
+    }
+
+    /// <summary>Ingångarna sett från en ansluten dator (när den här datorn inte når skärmen).</summary>
+    object ClientInputState(string dev, (string name, byte? current) via)
+    {
+        var codes = caps.TryGetValue(dev, out var known) && known.Count > 0 ? known.ToList() : Ddc.CommonInputs.ToList();
+        if (via.current is byte c && !codes.Contains(c)) codes.Insert(0, c);
+        var home = Settings.HomeInput(dev);
+        return new
+        {
+            loading = false,
+            current = via.current is byte cur ? (uint?)cur : null,
+            error = (string?)null,
+            fromMonitor = known != null,
+            home,
+            isHome = via.current is byte cc && home is byte hh ? cc == hh : (bool?)null,
+            options = codes.Select(x => new { code = x, name = Ddc.InputName(x), kind = Kind(x), computer = ComputerOnInput(dev, x) }),
+            via = via.name,
         };
     }
 
@@ -809,6 +860,8 @@ public sealed partial class AppWindow : Form
         }
         m.Items.Add(Item("Utöka alla", Settings.HotkeyExtend, () => Quietly("extend", null)));
         m.Items.Add(Item("Duplicera alla", null, () => Quietly("clone", null)));
+        if (net?.Sessions().Count > 0)
+            m.Items.Add(Item("Alla skärmar hit", Settings.HotkeyHome, () => Quietly("allHome", null)));
         foreach (var t in targets)
         {
             var id = t.Id;
