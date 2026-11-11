@@ -364,7 +364,17 @@ function renderInspector() {
     const sub = ow.kind === 'server' ? 'Visar den här datorn.'
       : ow.kind === 'other' ? 'Visar en annan källa. Välj vilken dator det är nedan.'
       : ow.reachable ? 'Dra pekaren över kanten – mus och tangentbord följer med.'
-      : ow.connected ? 'Ansluten, men klienten rapporterar inte den här skärmen.' : 'Inte ansluten just nu.';
+      : ow.connected ? 'Ansluten, men skärmen hittas inte bland datorns skärmar – välj vilken det är nedan.' : 'Inte ansluten just nu.';
+    // Vilken av klientens skärmar är det här? (EDID-koden kan skilja sig mellan ingångar)
+    const cms = ow.kind === 'client' && ow.connected ? (ow.clientMonitors || []) : [];
+    const autoLabel = ow.clientMonitor && !ow.clientMonitorChosen
+      ? `Automatiskt: ${cms.find(c => c.ident === ow.clientMonitor)?.label || ''}` : 'Automatiskt (hittades inte)';
+    const cmSelect = cms.length ? `
+        <label class="cm-pick ${ow.clientMonitor ? '' : 'missing'}"><span>Vilken av ${esc(ow.name)}s skärmar är det här?</span>
+          <select class="select" id="cmSel" data-client="${esc(ow.id)}">
+            <option value="">${esc(autoLabel)}</option>
+            ${cms.map(c => `<option value="${esc(c.ident)}" ${ow.clientMonitorChosen && ow.clientMonitor === c.ident ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}
+          </select></label>` : '';
     const opts = [['auto', 'Automatiskt (efter ingång)'], ['server', 'Den här datorn'], ...state.computers.map(c => [c.id, c.name])];
     const manualNote = ow.manual && ow.manual !== 'auto'
       ? `<div class="hint"><span>Du har angett vad skärmen visar. Det gäller tills ingången byts nästa gång.</span></div>` : '';
@@ -379,6 +389,7 @@ function renderInspector() {
           ${opts.map(([v, l]) => `<option value="${esc(v)}" ${(ow.manual || 'auto') === v ? 'selected' : ''}>${v === 'auto' ? '' : 'Visar just nu: '}${esc(l)}</option>`).join('')}
         </select>
         ${manualNote}
+        ${cmSelect}
         ${(m.computers || []).length > 1 ? `<div class="on-list">Ansluten till: ${m.computers.map(c => `<span class="chip">${c.id ? ICON.laptop : ICON.monitor}${esc(c.name)}${c.input ? ' · ' + esc(c.input) : ''}</span>`).join('')}</div>` : ''}
       </div>`;
   }
@@ -506,6 +517,7 @@ $('#inspector').addEventListener('click', e => {
 $('#inspector').addEventListener('change', e => {
   if (e.target.id === 'cloneWith') applyMode(selectedId, 'clone', e.target.value);
   if (e.target.id === 'ownerSel') call('setOwner', { id: selectedId, owner: e.target.value }).catch(() => {});
+  if (e.target.id === 'cmSel') call('mapClientMonitor', { id: selectedId, client: e.target.dataset.client, ident: e.target.value }).catch(() => {});
   if (e.target.id === 'resSel' || e.target.id === 'hzSel') {
     const m = byId(selectedId);
     const [w, h] = $('#resSel').value.split('x').map(Number);

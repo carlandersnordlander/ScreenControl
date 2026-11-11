@@ -411,6 +411,9 @@ body.busy .progress { opacity: 1; }
 .owner-card.client .owner-icon { background: #14b8a6; color: #fff; border-color: transparent; }
 .owner-name { font-weight: 650; }
 .owner-sub { font-size: 12px; color: var(--muted); }
+.cm-pick { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.cm-pick .select { margin-top: 0; }
+.cm-pick.missing { padding: 10px; border-radius: 10px; background: var(--warning-soft); color: var(--text); }
 .on-list { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; font-size: 12px; color: var(--muted); }
 .home-tag.who { color: #0f9d9a; }
 

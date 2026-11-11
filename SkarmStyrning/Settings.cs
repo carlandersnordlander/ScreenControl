@@ -30,6 +30,8 @@ public sealed class AppSettings
     public Dictionary<string, byte> LastInputs { get; set; } = new();
     /// <summary>Skärmar som inte rapporterar rätt ingång via DDC/CI (svarar alltid med sin egen port).</summary>
     public List<string> UnreliableInput { get; set; } = new();
+    /// <summary>Skärm → klient-id → vilken av klientens skärmar det är ("EDID|namn"), om man valt själv.</summary>
+    public Dictionary<string, Dictionary<string, string>> ClientMonitors { get; set; } = new();
     public int Version { get; set; }
 }
 
@@ -125,6 +127,26 @@ public static class Settings
             S.LastInputs[dev] = code;
             foreach (var k in S.MonitorOwners.Keys.Where(k => string.Equals(k, dev, StringComparison.OrdinalIgnoreCase)).ToList())
                 S.MonitorOwners.Remove(k);
+            Save();
+        }
+    }
+
+    public static string? ClientMonitorFor(string dev, string clientId)
+    {
+        lock (Gate)
+        {
+            var map = S.ClientMonitors.FirstOrDefault(kv => string.Equals(kv.Key, dev, StringComparison.OrdinalIgnoreCase)).Value;
+            return map?.GetValueOrDefault(clientId);
+        }
+    }
+
+    public static void SetClientMonitorFor(string dev, string clientId, string? ident)
+    {
+        lock (Gate)
+        {
+            var key = S.ClientMonitors.Keys.FirstOrDefault(k => string.Equals(k, dev, StringComparison.OrdinalIgnoreCase)) ?? dev;
+            if (!S.ClientMonitors.TryGetValue(key, out var map)) S.ClientMonitors[key] = map = new();
+            if (ident == null) map.Remove(clientId); else map[clientId] = ident;
             Save();
         }
     }

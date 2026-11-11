@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using SkarmStyrning.Net;
 
 namespace SkarmStyrning;
 
@@ -88,16 +89,16 @@ public sealed partial class AppWindow
         if (manual == "server") return t == null ? ("none", "manual") : (null, "manual");
         if (manual != null) return (manual, "manual");
 
-        var reporting = Reporting(KeyOf(dev, t));
+        var seen = Seen(dev, t);
+        var reporting = seen.Select(x => x.s).ToList();
         byte? cur = Settings.EffectiveInput(dev,
             t is { Active: true } && inputs.TryGetValue(t.Id, out var info) && info.Current is uint c ? (byte)c : null);
 
         // Den här datorn når inte skärmen – fråga klienterna, de ser den när den visar dem.
         if (cur == null)
         {
-            foreach (var s in reporting)
+            foreach (var (s, m) in seen)
             {
-                var m = s.Info!.Monitors.First(x => x.Key == KeyOf(dev, t));
                 if (m.Input is not int ci) continue;
                 byte code = (byte)ci;
                 bool? home = Settings.HomeInput(dev) is byte h ? h == code : t != null ? Settings.IsHome(t, code) : null;
@@ -136,19 +137,42 @@ public sealed partial class AppWindow
 
     static string KeyOf(string dev, DisplayTarget? t) => t?.EdidKey is { Length: > 0 } k ? k : PositionMemory.EdidOf(dev) ?? "";
 
-    List<ClientSession> Reporting(string key) =>
-        net == null || key == "" ? new() :
-        net.Sessions().Where(s => s.Info?.Monitors.Any(m => m.Key == key) == true).ToList();
+    static string Ident(ClientMonitor m) => m.Key + "|" + m.Name;
+    static bool SameName(string a, string b) => a.Trim().Equals(b.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    string NameOfMonitor(string dev, DisplayTarget? t) =>
+        t?.Name ?? PositionMemory.Items().FirstOrDefault(i => string.Equals(i.Dev, dev, StringComparison.OrdinalIgnoreCase))?.Name ?? "";
+
+    /// <summary>
+    /// Anslutna datorer som ser skärmen, och vilken av deras skärmar det är. Matchar i tur och ordning:
+    /// ditt val, samma EDID-kod, samma tillverkare + modellnamn, samma modellnamn. (Många skärmar har
+    /// olika produktkod på olika ingångar, t.ex. BenQ på DVI och HDMI.)
+    /// </summary>
+    List<(ClientSession s, ClientMonitor m)> Seen(string dev, DisplayTarget? t)
+    {
+        var list = new List<(ClientSession, ClientMonitor)>();
+        if (net == null) return list;
+        string key = KeyOf(dev, t), name = NameOfMonitor(dev, t);
+        foreach (var s in net.Sessions())
+        {
+            var mons = s.Info?.Monitors;
+            if (mons == null || mons.Count == 0) continue;
+            ClientMonitor? m = Settings.ClientMonitorFor(dev, s.Id) is string chosen ? mons.FirstOrDefault(x => Ident(x) == chosen) : null;
+            if (m == null && key != "") m = mons.FirstOrDefault(x => x.Key == key);
+            if (m == null && key.Length >= 4 && name != "")
+                m = mons.FirstOrDefault(x => x.Key.StartsWith(key[..4], StringComparison.OrdinalIgnoreCase) && SameName(x.Name, name));
+            if (m == null && name != "" && mons.Count(x => SameName(x.Name, name)) == 1)
+                m = mons.First(x => SameName(x.Name, name));
+            if (m != null) list.Add((s, m));
+        }
+        return list;
+    }
 
     /// <summary>En ansluten dator som ser skärmen och kan läsa dess ingång (null om ingen).</summary>
     (string name, byte? current)? ClientView(string dev, DisplayTarget? t)
     {
-        var key = KeyOf(dev, t);
-        foreach (var s in Reporting(key))
-        {
-            var m = s.Info!.Monitors.First(x => x.Key == key);
+        foreach (var (s, m) in Seen(dev, t))
             if (m.Input is int i) return (s.Name, (byte)i);
-        }
         return null;
     }
 
@@ -167,15 +191,15 @@ public sealed partial class AppWindow
             try { await Task.Run(() => Ddc.SetInput(t.GdiName, t.PhysIndex, code)); Commanded(dev, code); return null; }
             catch (Exception ex) { directError = ex.Message; }
         }
-        string key = KeyOf(dev, t);
-        var sessions = Reporting(key);
-        if (sessions.Count == 0)
+        var seen = Seen(dev, t);
+        if (seen.Count == 0)
             return directError ?? "Den här datorn når inte skärmen, och ingen ansluten dator ser den.";
         string? last = null;
         // Datorer som kan läsa skärmens ingång når den säkert – prova dem först.
-        foreach (var s in sessions.OrderByDescending(s => s.Info?.Monitors.FirstOrDefault(m => m.Key == key)?.Input != null))
+        foreach (var (s, m) in seen.OrderByDescending(x => x.m.Input != null))
         {
-            var r = await s.SetInput(key, code, TimeSpan.FromSeconds(6));
+            // Klientens egen EDID-kod för skärmen (kan skilja sig från vår).
+            var r = await s.SetInput(m.Key, code, TimeSpan.FromSeconds(6));
             if (r.Ok) { Commanded(dev, code); return null; }
             last = $"via {s.Name}: {r.Error}";
         }
@@ -243,10 +267,8 @@ public sealed partial class AppWindow
             var (owner, _) = ResolveOwner(p.id, t);
             if (owner == null) { if (sr != null) list.Add(new Region(p.id, master, null, sr, null)); continue; }
             if (owner is "other" or "none") continue;
-            var s = net.Session(owner);
-            var monitors = s?.Info?.Monitors;
-            string key = KeyOf(p.id, t);
-            var cm = monitors?.FirstOrDefault(m => m.Key == key) ?? (monitors?.Count == 1 ? monitors[0] : null);
+            var monitors = net.Session(owner)?.Info?.Monitors;
+            var cm = Seen(p.id, t).FirstOrDefault(x => x.s.Id == owner).m ?? (monitors?.Count == 1 ? monitors[0] : null);
             if (cm == null) continue;
             list.Add(new Region(p.id, master, owner, sr, new Rectangle(cm.X, cm.Y, cm.W, cm.H)));
         }
@@ -264,6 +286,9 @@ public sealed partial class AppWindow
         string? name = kind == "client" ? (net.Session(owner!)?.Name ?? net.PairedClients().FirstOrDefault(p => p.Id == owner)?.Name ?? "Okänd dator") : null;
         bool connected = kind != "client" || net.Session(owner!) != null;
         bool reachable = lastRegions.Any(r => r.Dev == dev && r.Owner == owner && owner != null);
+        // Klientens skärmar – så att man kan välja vilken det är om den inte hittas automatiskt.
+        var session = kind == "client" ? net.Session(owner!) : null;
+        var match = session == null ? null : Seen(dev, t).FirstOrDefault(x => x.s.Id == session.Id).m;
         return new
         {
             kind,
@@ -273,6 +298,9 @@ public sealed partial class AppWindow
             manual = Settings.MonitorOwner(dev) ?? "auto",
             connected,
             reachable, // mus och tangentbord kan gå hit
+            clientMonitors = session?.Info?.Monitors.Select(m => new { ident = Ident(m), label = $"{m.Name} ({m.W}×{m.H})" }).ToList(),
+            clientMonitor = match == null ? null : Ident(match),
+            clientMonitorChosen = session != null && Settings.ClientMonitorFor(dev, session.Id) != null,
         };
     }
 
@@ -281,7 +309,7 @@ public sealed partial class AppWindow
         var list = new List<object>();
         if (t != null)
             list.Add(new { id = (string?)null, name = "Den här datorn", input = Settings.HomeInput(dev) is byte h ? Ddc.InputName(h) : null });
-        foreach (var s in Reporting(KeyOf(dev, t)))
+        foreach (var (s, _) in Seen(dev, t))
         {
             var code = InputOf(dev, s.Id);
             list.Add(new { id = (string?)s.Id, name = s.Name, input = code is byte c ? Ddc.InputName(c) : null });
@@ -474,6 +502,15 @@ public sealed partial class AppWindow
             case "allHome":
                 await AllHome();
                 return (true, null);
+
+            case "mapClientMonitor":
+            {
+                // Användaren talar om vilken av klientens skärmar det här är ("" = automatiskt).
+                string ident = Str("ident");
+                Settings.SetClientMonitorFor(Str("id"), Str("client"), ident == "" ? null : ident);
+                await PushState();
+                return (true, null);
+            }
 
             case "allowFirewall":
                 await AllowInFirewall();
