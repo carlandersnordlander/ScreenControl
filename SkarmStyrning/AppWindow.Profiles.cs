@@ -5,6 +5,35 @@ namespace SkarmStyrning;
 /// <summary>Redigera profiler utan att lägga på dem.</summary>
 public sealed partial class AppWindow
 {
+    /// <summary>
+    /// Andra datorer som profilen byter skärmar till (via ingångarna), och om de är anslutna.
+    /// Är en sådan dator inte ansluten går det inte att byta tillbaka – då ska profilen inte användas.
+    /// </summary>
+    List<(string id, string name, bool connected)> RequiredClients(Profile p)
+    {
+        var list = new List<(string id, string name, bool connected)>();
+        if (net == null || p.Inputs == null) return list;
+        foreach (var (dev, code) in p.Inputs)
+        {
+            var owner = Settings.InputOwner(dev, code);
+            if (owner == null || list.Any(x => x.id == owner)) continue;
+            var session = net.Session(owner);
+            string name = session?.Name ?? net.PairedClients().FirstOrDefault(c => c.Id == owner)?.Name ?? "en annan dator";
+            list.Add((owner, name, session != null));
+        }
+        return list;
+    }
+
+    /// <summary>Varför profilen inte kan användas just nu (null = den kan användas).</summary>
+    string? BlockedReason(Profile p)
+    {
+        var missing = RequiredClients(p).Where(c => !c.connected).Select(c => c.name).ToList();
+        if (missing.Count == 0) return null;
+        string who = string.Join(" och ", missing);
+        return $"Profilen \"{p.Name}\" byter skärmar till {who}, men {(missing.Count > 1 ? "de är" : "den är")} inte ansluten. " +
+               $"Starta klienten på {who} först – annars går det inte att byta tillbaka härifrån.";
+    }
+
     object GetProfileForEdit(string name)
     {
         var p = profiles.FirstOrDefault(x => x.Name == name) ?? throw new InvalidOperationException("Profilen finns inte.");
@@ -35,6 +64,7 @@ public sealed partial class AppWindow
                     .Select(g => new { w = g.Key.Width, h = g.Key.Height, hz = g.Select(v => v.Hz).Distinct().OrderByDescending(v => v).ToList() })
                     .ToList(),
                 input,
+                home = Settings.HomeInput(x.id),
                 inputs = codes.Select(c => new { code = c, name = Ddc.InputName(c), computer = ComputerOnInput(x.id, c) }),
             };
         }).ToList();
@@ -117,7 +147,10 @@ public sealed partial class AppWindow
             Toast($"Profilen \"{name}\" är sparad.", "success");
 
         if (a["apply"]?.GetValue<bool>() == true)
-            await Dispatch("applyProfile", new JsonObject { ["name"] = name });
+        {
+            if (BlockedReason(p) is string blocked) Toast(blocked + " Profilen är sparad men används inte nu.", "error");
+            else await Dispatch("applyProfile", new JsonObject { ["name"] = name });
+        }
     }
 
     async Task<(bool handled, object? result)> ProfilesDispatch(string cmd, JsonNode? a)

@@ -13,7 +13,11 @@ public sealed partial class AppWindow
     void StartKvm()
     {
         net = new NetServer();
-        net.Changed += () => BeginInvoke(async () => await PushState());
+        net.Changed += () => BeginInvoke(async () =>
+        {
+            BuildTrayMenu(); // profiler som kräver en dator blir valbara/spärrade när den ansluter/kopplar ner
+            await PushState();
+        });
         net.Paired += name => BeginInvoke(() =>
         {
             Toast($"{name} är parkopplad och ansluter strax.", "success");

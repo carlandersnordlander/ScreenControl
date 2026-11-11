@@ -654,8 +654,10 @@ function renderProfiles() {
         ${p.layout ? `<span title="${esc(p.layout)}">${ICON.monitor.replace('<svg', '<svg style="width:12px;height:12px;vertical-align:-2px"')} ${esc(p.layout)}</span>` : ''}
         ${p.inputs.length ? `<span title="${esc(p.inputs.join(', '))}">${PORT.hdmi.replace('<svg', '<svg style="width:12px;height:12px;vertical-align:-2px"')} ${esc(p.inputs.join(' · '))}</span>` : ''}
       </div>
+      ${(p.requires || []).length ? `<div class="requires">${p.requires.map(r =>
+        `<span class="chip ${r.connected ? 'on' : 'warn'}" title="${r.connected ? 'Ansluten' : 'Inte ansluten – starta klienten där'}">${ICON.laptop}Kräver ${esc(r.name)}${r.connected ? '' : ' · ej ansluten'}</span>`).join('')}</div>` : ''}
       <div class="profile-actions">
-        <button class="btn primary small" data-act="apply">${ICON.play}Använd</button>
+        <button class="btn primary small" data-act="apply" ${p.blocked ? `disabled title="${esc(p.blocked)}"` : ''}>${ICON.play}Använd</button>
         <button class="btn small ghost" data-act="edit" title="Redigera profilen utan att byta till den">${ICON.edit}</button>
         <button class="btn small ghost" data-act="copy" title="Kopiera genvägskommando">${ICON.copy}</button>
         <button class="btn small ghost danger" data-act="delete" title="Ta bort">${ICON.trash}</button>
@@ -715,15 +717,25 @@ async function editProfile(name) {
       + list.map(o => { const v = `${o.w}|${o.h}|${o.hz}`; return `<option value="${v}" ${v === sel ? 'selected' : ''}>${o.w} × ${o.h} @ ${o.hz} Hz</option>`; }).join('');
   };
   const modeOptions = m => `
-    <option value="off" ${m.mode === 'off' ? 'selected' : ''}>Av</option>
-    <option value="extend" ${m.mode === 'extend' ? 'selected' : ''}>På (utökad)</option>
+    <option value="off" ${m.mode === 'off' ? 'selected' : ''}>Av (används inte här)</option>
+    <option value="extend" ${m.mode === 'extend' ? 'selected' : ''}>Utökad</option>
     ${mons.filter(o => o.dev !== m.dev).map(o => `<option value="clone:${esc(o.dev)}" ${m.mode === 'clone' && m.cloneOf === o.dev ? 'selected' : ''}>Duplicera ${esc(o.name)}</option>`).join('')}`;
   const inputOptions = m => `<option value="">Ändra inte</option>` + m.inputs.map(o =>
-    `<option value="${o.code}" ${m.input === o.code ? 'selected' : ''}>${esc(o.name)}${o.computer ? ' – ' + esc(o.computer) : ''}</option>`).join('');
+    `<option value="${o.code}" ${m.input === o.code ? 'selected' : ''}>${esc(o.name)}${o.computer ? ' – ' + esc(o.computer) : m.home != null && o.code !== m.home ? ' – annan källa' : ''}</option>`).join('');
+  /** Visar ingången en annan dator (eller annan källa än den här datorns)? */
+  const isOther = (m, code) => {
+    if (code == null) return false;
+    const o = m.inputs.find(x => x.code === code);
+    if (o?.computer) return o.computer !== 'Den här datorn';
+    return m.home != null && code !== m.home;
+  };
 
   modal(`
     <h3>Redigera profil</h3>
     <p>Ändringarna sparas utan att profilen läggs på. Placeringen följer skärmlayouten i huvudfönstret.</p>
+    <div class="notice info" style="margin-bottom:14px">${ICON.info}<div><b>Den här datorns bild</b> = hur den här datorn använder skärmen.
+      <b>Ingång</b> = vad skärmen visar. Ska en skärm visa en annan dator (t.ex. laptopen), välj den ingången –
+      då sätts bilden till <i>Av</i> så att den här datorn bara använder de andra skärmarna.</div></div>
     <div class="field"><label for="peName">Namn</label><input class="input" id="peName" value="${esc(pr.name)}" maxlength="40"></div>
     <div class="toggle-row"><div><strong>Ändra skärmlayout</strong><span>Vilka skärmar som är på, huvudskärm och upplösning. Av = profilen byter bara ingångar.</span></div>
       <label class="switch"><input type="checkbox" id="peLayout" ${pr.hasLayout ? 'checked' : ''}><i></i></label></div>
@@ -736,10 +748,11 @@ async function editProfile(name) {
             <label class="pe-primary" title="Huvudskärm i profilen"><input type="radio" name="pePrim" value="${esc(m.dev)}" ${pr.primary === m.dev ? 'checked' : ''}>${ICON.star}Huvudskärm</label>
           </div>
           <div class="pe-grid">
-            <label><span>Visning</span><select class="select pe-mode">${modeOptions(m)}</select></label>
+            <label><span>Den här datorns bild</span><select class="select pe-mode">${modeOptions(m)}</select></label>
             <label><span>Upplösning och Hz</span><select class="select pe-res">${resOptions(m)}</select></label>
             <label><span>Ingång</span><select class="select pe-input">${inputOptions(m)}</select></label>
           </div>
+          <div class="pe-note"></div>
         </div>`).join('')}
     </div>
     <div class="modal-actions">
@@ -751,9 +764,30 @@ async function editProfile(name) {
     root => {
       root.querySelector('.modal').classList.add('wide');
       const layoutOn = () => $('#peLayout', root).checked;
+      const monOf = row => mons.find(x => x.dev === row.dataset.dev);
+      const inputOf = row => { const v = row.querySelector('.pe-input').value; return v === '' ? null : Number(v); };
+
+      // Ingång till en annan dator → den här datorns bild av där (och tillbaka till utökad för vår egen ingång).
+      root.addEventListener('change', e => {
+        const sel = e.target.closest('.pe-input');
+        if (!sel || !layoutOn()) return;
+        const row = sel.closest('.pe-mon'), m = monOf(row), code = inputOf(row);
+        const modeSel = row.querySelector('.pe-mode');
+        if (isOther(m, code)) modeSel.value = 'off';
+        else if (code != null && modeSel.value === 'off') modeSel.value = 'extend';
+      });
+
       const sync = () => {
         for (const row of root.querySelectorAll('.pe-mon')) {
           const mode = row.querySelector('.pe-mode').value;
+          const m = monOf(row), code = inputOf(row);
+          const other = isOther(m, code);
+          const who = m.inputs.find(x => x.code === code)?.computer || 'en annan källa';
+          const note = row.querySelector('.pe-note');
+          note.className = 'pe-note' + (other && layoutOn() && mode !== 'off' ? ' warn' : '');
+          note.innerHTML = !other ? ''
+            : !layoutOn() || mode === 'off' ? `${ICON.laptop}Skärmen visar <b>${esc(who)}</b> – den här datorn använder den inte.`
+            : `${ICON.warn}Skärmen visar <b>${esc(who)}</b>, men den här datorn har kvar en osynlig yta där. Välj <i>Av</i> för att bara använda de andra skärmarna.`;
           const ext = layoutOn() && mode === 'extend';
           row.querySelector('.pe-mode').disabled = !layoutOn();
           row.querySelector('.pe-res').disabled = !ext;

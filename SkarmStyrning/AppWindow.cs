@@ -226,6 +226,12 @@ public sealed partial class AppWindow : Form
     async Task ApplyProfileFromHotkey(string name)
     {
         if (op.CurrentCount == 0) { OsdOverlay.Show("Vänta lite", "En ändring pågår redan …"); return; }
+        var prof = profiles.FirstOrDefault(p => p.Name == name);
+        if (prof != null && RequiredClients(prof).FirstOrDefault(c => !c.connected) is { id: not null } off)
+        {
+            OsdOverlay.Show($"Profil: {name}", $"{off.name} är inte ansluten – starta klienten där först");
+            return;
+        }
         int i = profiles.FindIndex(p => p.Name == name);
         string pos = profiles.Count > 1 ? $"{i + 1} av {profiles.Count} · " : "";
         OsdOverlay.Show($"Profil: {name}", pos + "byter …");
@@ -278,8 +284,15 @@ public sealed partial class AppWindow : Form
     {
         if (profiles.Count == 0) { OsdOverlay.Show("Inga profiler", "Skapa en profil i Skärmstyrning först."); return; }
         int last = profiles.FindIndex(p => p.Name == Settings.LastProfile);
-        var next = profiles[(last + 1) % profiles.Count];
-        await ApplyProfileFromHotkey(next.Name);
+        // Hoppa över profiler som kräver en dator som inte är ansluten.
+        for (int step = 1; step <= profiles.Count; step++)
+        {
+            var next = profiles[(last + step) % profiles.Count];
+            if (BlockedReason(next) != null) continue;
+            await ApplyProfileFromHotkey(next.Name);
+            return;
+        }
+        OsdOverlay.Show("Ingen profil att byta till", "Profilerna kräver en dator som inte är ansluten");
     }
 
     // ---------------- Tema ----------------
@@ -513,6 +526,8 @@ public sealed partial class AppWindow : Form
             case "applyProfile":
             {
                 var p = profiles.FirstOrDefault(x => x.Name == Str("name")) ?? throw new InvalidOperationException("Profilen finns inte.");
+                // Byter profilen skärmar till en dator som inte är ansluten kommer man inte tillbaka – stoppa.
+                if (BlockedReason(p) is string blocked) throw new InvalidOperationException(blocked);
                 Settings.LastProfile = p.Name;
                 await DisplayOp($"Använder profilen \"{p.Name}\"", () =>
                 {
@@ -762,6 +777,8 @@ public sealed partial class AppWindow : Form
                 inputs = p.InputLabels?.Values.ToList() ?? new List<string>(),
                 hotkey = HotkeyState(p.Hotkey),
                 active = p.Name == Settings.LastProfile,
+                requires = RequiredClients(p).Select(c => new { name = c.name, connected = c.connected }).ToList(),
+                blocked = BlockedReason(p),
             }),
             settings = new
             {
@@ -874,8 +891,11 @@ public sealed partial class AppWindow : Form
             foreach (var p in profiles)
             {
                 var name = p.Name;
-                var item = Item("Profil: " + name, p.Hotkey, () => Quietly("applyProfile", new JsonObject { ["name"] = name }));
+                var missing = RequiredClients(p).Where(c => !c.connected).Select(c => c.name).ToList();
+                var item = Item("Profil: " + name + (missing.Count > 0 ? $"  ({string.Join(", ", missing)} ej ansluten)" : ""),
+                    p.Hotkey, () => Quietly("applyProfile", new JsonObject { ["name"] = name }));
                 item.Checked = name == Settings.LastProfile;
+                item.Enabled = missing.Count == 0;
                 m.Items.Add(item);
             }
         }
