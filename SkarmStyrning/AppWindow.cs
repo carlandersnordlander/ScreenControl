@@ -700,6 +700,7 @@ public sealed partial class AppWindow : Form
             p.Hotkey = Hotkey.Suggest(AllHotkeys().Select(h => h.combo)) ?? "";
             profiles.Add(p);
         }
+        Settings.LastProfile = name; // det som just sparades är det som gäller nu
         ProfileStore.Save(profiles);
         RegisterHotkeys();
         BuildTrayMenu();
@@ -776,6 +777,7 @@ public sealed partial class AppWindow : Form
                 layout = ProfileDescription(p),
                 hotkey = HotkeyState(p.Hotkey),
                 active = p.Name == Settings.LastProfile,
+                changes = p.Name == Settings.LastProfile && busyText == null ? ProfileChanges(p) : new List<string>(),
                 requires = RequiredClients(p).Select(c => new { name = c.name, connected = c.connected }).ToList(),
                 blocked = BlockedReason(p),
             }),

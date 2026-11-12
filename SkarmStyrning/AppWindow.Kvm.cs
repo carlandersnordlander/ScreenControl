@@ -382,7 +382,10 @@ public sealed partial class AppWindow
             if (owner == null) { if (sr != null) list.Add(new Region(p.id, master, null, sr, null)); continue; }
             if (owner is "other" or "none") continue;
             var monitors = net.Session(owner)?.Info?.Monitors;
-            var cm = Seen(p.id, t).FirstOrDefault(x => x.s.Id == owner).m ?? (monitors?.Count == 1 ? monitors[0] : null);
+            // En skärm som bara sitter på klienten (laptopens egen) får aldrig låna en annan skärms plats –
+            // är locket stängt finns den helt enkelt inte.
+            var cm = Seen(p.id, t).FirstOrDefault(x => x.s.Id == owner).m
+                ?? (monitors?.Count == 1 && !PositionMemory.IsClientScreen(p.id) ? monitors[0] : null);
             if (cm == null) continue;
             list.Add(new Region(p.id, master, owner, sr, new Rectangle(cm.X, cm.Y, cm.W, cm.H)));
         }

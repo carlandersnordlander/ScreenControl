@@ -91,6 +91,45 @@ public sealed partial class AppWindow
         return spec;
     }
 
+    /// <summary>
+    /// Vad som skiljer sig mellan profilen och hur det är just nu (tom = stämmer). Används för den
+    /// aktiva profilen så att man kan spara ändringar i den eller som en ny profil.
+    /// </summary>
+    List<string> ProfileChanges(Profile p)
+    {
+        var changes = new List<string>();
+        if (p.Spec == null) return changes;
+        ProfileLayout now;
+        try { now = SpecFromNow(DisplayConfig.SpecFromCurrent()); } catch { return changes; }
+        string Who(string? show) => show switch
+        {
+            "server" => "den här datorn",
+            "off" or null => "av",
+            var id => ClientName(id) ?? "en annan dator",
+        };
+        foreach (var pm in p.Spec.Monitors.Where(m => m.Show is not (null or "keep")))
+        {
+            var nm = now.Monitors.FirstOrDefault(m => string.Equals(m.Dev, pm.Dev, StringComparison.OrdinalIgnoreCase));
+            if (nm == null) continue;
+            string name = nm.Name ?? pm.Name ?? "Skärm";
+            if (pm.Show == "off")
+            {
+                if (nm.Show == "server") changes.Add($"{name} används av den här datorn");
+                continue;
+            }
+            if (pm.Show != nm.Show) { changes.Add($"{name} visar {Who(nm.Show)} (profilen: {Who(pm.Show)})"); continue; }
+            if (pm.Show != "server") continue;
+            if (pm.Mode != nm.Mode || (pm.Mode == "clone" && !string.Equals(pm.CloneOf, nm.CloneOf, StringComparison.OrdinalIgnoreCase)))
+                changes.Add($"{name}: {(nm.Mode == "clone" ? "duplicerad" : "utökad")} i stället för {(pm.Mode == "clone" ? "duplicerad" : "utökad")}");
+            else if (pm.Mode == "extend" && (pm.Width, pm.Height, pm.Hz) != (nm.Width, nm.Height, nm.Hz))
+                changes.Add(nm.Width is int nw ? $"{name}: {nw}×{nm.Height}{(nm.Hz is int h2 ? $" @ {h2} Hz" : "")}" : $"{name}: standardupplösning");
+        }
+        if (p.Spec.Primary is string prim && now.Primary is string nprim && !string.Equals(prim, nprim, StringComparison.OrdinalIgnoreCase)
+            && now.Monitors.Any(m => string.Equals(m.Dev, prim, StringComparison.OrdinalIgnoreCase) && m.Show == "server" && m.Mode == "extend"))
+            changes.Add($"Huvudskärm: {now.Monitors.FirstOrDefault(m => string.Equals(m.Dev, nprim, StringComparison.OrdinalIgnoreCase))?.Name ?? "annan"}");
+        return changes;
+    }
+
     // ---------------- Redigera ----------------
 
     object GetProfileForEdit(string name)

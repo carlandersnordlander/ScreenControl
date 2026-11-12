@@ -744,6 +744,15 @@ function renderProfiles() {
       </div>
       ${(p.requires || []).length ? `<div class="requires">${p.requires.map(r =>
         `<span class="chip ${r.connected ? 'on' : 'warn'}" title="${r.connected ? 'Ansluten' : 'Inte ansluten – starta klienten där'}">${ICON.laptop}Kräver ${esc(r.name)}${r.connected ? '' : ' · ej ansluten'}</span>`).join('')}</div>` : ''}
+      ${(p.changes || []).length ? `
+      <div class="profile-changed">
+        <div class="pc-head">${ICON.edit}<b>Ändrat sedan profilen lades på</b></div>
+        <ul>${p.changes.map(c => `<li>${esc(c)}</li>`).join('')}</ul>
+        <div class="pc-actions">
+          <button class="btn small primary" data-act="update" title="Skriv över ”${esc(p.name)}” med hur det är just nu">Spara ändringar</button>
+          <button class="btn small" data-act="saveNew">Ny profil</button>
+        </div>
+      </div>` : ''}
       <div class="profile-actions">
         <button class="btn primary small" data-act="apply" ${p.blocked ? `disabled title="${esc(p.blocked)}"` : ''}>${ICON.play}Använd</button>
         <button class="btn small ghost" data-act="edit" title="Redigera profilen utan att byta till den">${ICON.edit}</button>
@@ -761,6 +770,8 @@ $('#profiles').addEventListener('click', e => {
   if (act === 'apply') call('applyProfile', { name }).catch(() => {});
   if (act === 'copy') call('copyCommand', { name }).catch(() => {});
   if (act === 'edit') editProfile(name);
+  if (act === 'update') call('saveProfile', { name }).catch(() => {});
+  if (act === 'saveNew') newProfileDialog();
   if (act === 'hotkey') {
     const p = (state.profiles || []).find(x => x.name === name);
     recordHotkey(`Kortkommando för ”${name}”`, p?.hotkey, value => call('setProfileHotkey', { name, hotkey: value }));
@@ -768,7 +779,9 @@ $('#profiles').addEventListener('click', e => {
   if (act === 'delete') confirmDialog(`Ta bort ”${name}”?`, 'Profilen tas bort. Det går inte att ångra.', 'Ta bort', () => call('deleteProfile', { name }).catch(() => {}));
 });
 
-$('#btnNewProfile').onclick = () => {
+$('#btnNewProfile').onclick = () => newProfileDialog();
+
+function newProfileDialog() {
   const def = `Profil ${(state.profiles || []).length + 1}`;
   modal(`
     <h3>Ny profil</h3>
@@ -786,7 +799,7 @@ $('#btnNewProfile').onclick = () => {
       $('#pSave', root).onclick = save;
       name.addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
     });
-};
+}
 
 /* ================= Redigera profil ================= */
 async function editProfile(name) {

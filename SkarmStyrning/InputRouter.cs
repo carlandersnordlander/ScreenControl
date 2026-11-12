@@ -55,8 +55,43 @@ public sealed class InputRouter : IDisposable
         regions = r;
         PostToHook(() =>
         {
-            if (remote != null && !r.Any(x => x.Owner == remote)) ExitToServer(null);
+            if (remote == null) return;
+            // Skärmen pekaren var på finns kvar → inget att göra.
+            if (At(r, vx, vy) is { } here && here.Owner == remote) return;
+            Relocate(r);
         });
+    }
+
+    /// <summary>
+    /// Skärmen som pekaren var på försvann (t.ex. laptopens lock stängdes) – flytta pekaren till
+    /// närmaste skärm som finns kvar, på den dator som äger den.
+    /// </summary>
+    void Relocate(Region[] rs)
+    {
+        Region? best = null;
+        double bestDist = double.MaxValue;
+        foreach (var x in rs)
+        {
+            if (x.Owner == null ? x.ServerRect == null : x.ClientRect == null || net.Session(x.Owner) == null) continue;
+            double dx = Math.Max(0, Math.Max(x.Master.Left - vx, vx - (x.Master.Right - 1)));
+            double dy = Math.Max(0, Math.Max(x.Master.Top - vy, vy - (x.Master.Bottom - 1)));
+            double d = dx * dx + dy * dy;
+            if (d < bestDist) { bestDist = d; best = x; }
+        }
+        if (best == null) { ExitToServer(null); return; }
+        vx = Math.Clamp(vx, best.Master.Left, best.Master.Right - 1);
+        vy = Math.Clamp(vy, best.Master.Top, best.Master.Bottom - 1);
+        if (best.Owner == null) { ExitToServer(best); return; }
+        var (cx, cy) = ToClient(best, vx, vy);
+        if (best.Owner != remote)
+        {
+            net.Session(remote!)?.Post(MsgType.ReleaseAll);
+            net.Session(remote!)?.Post(MsgType.Leave);
+            remote = best.Owner;
+            net.Session(remote)?.Post(MsgType.Enter, Wire.Point(cx, cy));
+            ActiveChanged?.Invoke(remote);
+        }
+        else net.Session(remote)?.Post(MsgType.MouseMove, Wire.Point(cx, cy));
     }
 
     // ---------- Krokar ----------
@@ -256,7 +291,11 @@ public sealed class InputRouter : IDisposable
             // Glid längs kanten i stället för att fastna.
             if ((r = At(rs, nx, vy)) != null) ny = vy;
             else if ((r = At(rs, vx, ny)) != null) nx = vx;
-            else return;
+            else
+            {
+                if (At(rs, vx, vy) == null) Relocate(rs); // pekaren står där ingen skärm finns längre
+                return;
+            }
         }
         vx = nx; vy = ny;
 

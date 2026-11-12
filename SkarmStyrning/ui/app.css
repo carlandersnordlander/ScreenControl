@@ -351,6 +351,13 @@ body.busy .progress { opacity: 1; }
 .profile-meta { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
 .profile-meta span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .profile-actions { display: flex; gap: 6px; margin-top: auto; }
+.profile-changed { border-radius: 10px; padding: 10px 12px; background: color-mix(in srgb, #f59e0b 12%, transparent); border: 1px solid color-mix(in srgb, #f59e0b 35%, transparent); font-size: 12.5px; }
+.profile-changed .pc-head { display: flex; align-items: center; gap: 6px; }
+.profile-changed .pc-head svg { width: 14px; height: 14px; color: #d97706; flex: none; }
+.profile-changed ul { margin: 6px 0 8px; padding-left: 18px; color: var(--muted); }
+.profile-changed li { margin: 2px 0; }
+.profile-changed .pc-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.profile-changed .pc-actions .btn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .profile-actions .btn.primary { flex: 1; }
 .empty {
   border: 1.5px dashed var(--border-strong); border-radius: 12px;
