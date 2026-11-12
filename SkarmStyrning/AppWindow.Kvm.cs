@@ -37,6 +37,13 @@ public sealed partial class AppWindow
         });
         router.Start();
 
+        // "Utöka" ska inte slå på skärmar som visar en annan dator.
+        Smart.ShowsOtherComputer = dev =>
+        {
+            if (Settings.LastInput(dev) is not byte code) return false;
+            return ComputerForInput(dev, null, code) is string who && who != "server";
+        };
+
         // Profiler byter ingångar via kopplingstabellen och den dator skärmen visar just nu.
         Actions.Hooks = new Actions.ProfileHooks
         {
@@ -55,6 +62,7 @@ public sealed partial class AppWindow
             foreach (var s in net.Sessions()) s.Post(Net.MsgType.Clipboard, bytes);
         };
         net.SessionStarted += s => s.Post(Net.MsgType.ClipboardPolicy, new[] { (byte)(Settings.ShareClipboard ? 1 : 0) });
+        net.SessionStarted += s => s.Post(Net.MsgType.KeepAwake, new[] { (byte)(Settings.KeepAwake ? 1 : 0) });
         StartAudio();
         net.ClipboardReceived += (from, text) => BeginInvoke(() =>
         {
@@ -315,6 +323,48 @@ public sealed partial class AppWindow
         });
     }
 
+    /// <summary>
+    /// Efter ett ingångsbyte: visar skärmen en annan dator släpper den här datorn den (så att
+    /// t.ex. en skärm här och två på laptopen fungerar utan "osynliga" ytor); byts den tillbaka
+    /// hit tas den med i den utökade layouten igen. Körs i bakgrunden. Returnerar en kort text.
+    /// </summary>
+    string FollowInput(string dev, byte code)
+    {
+        var who = ComputerForInput(dev, null, code);
+        if (who == null) return "";
+        var ts = DisplayConfig.GetTargets();
+        var t = ts.FirstOrDefault(x => string.Equals(x.DevicePath, dev, StringComparison.OrdinalIgnoreCase));
+        List<IReadOnlyList<DisplayTarget>> GroupsOf(IEnumerable<DisplayTarget> xs) =>
+            xs.GroupBy(x => x.GdiName ?? x.Id).Select(g => (IReadOnlyList<DisplayTarget>)g.ToList()).ToList();
+
+        if (who != "server")
+        {
+            string name = ClientName(who) ?? "den andra datorn";
+            Smart.SetExcluded(dev, "visar " + name);
+            if (t is not { Active: true }) return "";
+            var rest = ts.Where(x => x.Active && x != t).ToList();
+            if (rest.Count == 0) return $" Den här datorn har ingen annan skärm, så den behåller {t.Label}.";
+            DisplayConfig.ApplyGroups(GroupsOf(rest));
+            return $" Den här datorn släppte skärmen – den används av {name}.";
+        }
+
+        // Tillbaka hit: vänta tills Windows ser skärmen igen och utöka dit.
+        Smart.SetExcluded(dev, null);
+        for (int i = 0; i < 10 && t is not { Active: true }; i++)
+        {
+            if (t != null)
+            {
+                var active = ts.Where(x => x.Active).ToList();
+                DisplayConfig.ApplyGroups(GroupsOf(active).Append(new[] { t }).ToList());
+                return " Den här datorn använder skärmen igen.";
+            }
+            Thread.Sleep(800);
+            ts = DisplayConfig.GetTargets();
+            t = ts.FirstOrDefault(x => string.Equals(x.DevicePath, dev, StringComparison.OrdinalIgnoreCase));
+        }
+        return "";
+    }
+
     /// <summary>"Alla skärmar hit": byt tillbaka alla skärmar till den här datorns ingång och utöka.</summary>
     async Task AllHome()
     {
@@ -419,6 +469,10 @@ public sealed partial class AppWindow
             clientMonitor = match == null ? null : Ident(match),
             clientMonitorChosen = session != null && Settings.ClientMonitorFor(dev, session.Id) != null,
             connections = ConnectionsState(dev, t),
+            // Klientens eget läge: alla skärmar på samma plats = duplicerat.
+            clientMode = session?.Info?.Monitors is { Count: > 1 } cms
+                ? (cms.All(c => c.X == cms[0].X && c.Y == cms[0].Y) ? "clone" : "extend") : session != null ? "extend" : null,
+            clientScreens = session?.Info?.Monitors.Count ?? 0,
         };
     }
 
@@ -605,6 +659,16 @@ public sealed partial class AppWindow
                 await PushState();
                 return (true, null);
 
+            case "setClientMode":
+            {
+                // Utöka/duplicera på den andra datorn (som Win+P där).
+                var s = net.Session(Str("client")) ?? throw new InvalidOperationException("Datorn är inte ansluten.");
+                bool clone = Str("mode") == "clone";
+                s.Post(MsgType.DisplayMode, new[] { (byte)(clone ? 2 : 1) });
+                Toast($"{s.Name}: {(clone ? "duplicerar" : "utökar")} skärmarna.", "success");
+                return (true, null);
+            }
+
             case "setOwner":
             {
                 // "Visar just nu: X" – du talar om vad skärmen visar. Finns en koppling blir dess ingång
@@ -644,6 +708,13 @@ public sealed partial class AppWindow
 
             case "allowFirewall":
                 await AllowInFirewall();
+                return (true, null);
+
+            case "setKeepAwake":
+                Settings.KeepAwake = a?["value"]?.GetValue<bool>() ?? false;
+                Net.KeepAwake.Enabled = Settings.KeepAwake;
+                foreach (var s in net.Sessions()) s.Post(Net.MsgType.KeepAwake, new[] { (byte)(Settings.KeepAwake ? 1 : 0) });
+                await PushState();
                 return (true, null);
 
             case "setShareAudio":

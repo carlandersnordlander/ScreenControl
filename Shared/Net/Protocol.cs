@@ -40,6 +40,8 @@ public enum MsgType : byte
     Audio = 43,       // klient → server: ett ljudpaket via TCP (reserv när UDP inte går fram)
     AudioUseTcp = 44, // server → klient: UDP kommer inte fram – skicka via TCP
     AudioStatus = 45, // klient → server: skickar/skickar inte, från vilken enhet (JSON AudioStatusMsg)
+    DisplayMode = 46, // server → klient: 1 = utöka, 2 = duplicera klientens skärmar
+    KeepAwake = 47,   // server → klient: 1 = håll datorn vaken, 0 = låt den somna som vanligt
     Ping = 30,
     Pong = 31,
 }

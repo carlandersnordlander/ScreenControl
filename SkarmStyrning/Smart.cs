@@ -14,6 +14,8 @@ public static class Smart
     /// <summary>Ingångar per skärm (från capabilities), fylls i av fönstret.</summary>
     public static readonly Dictionary<string, List<byte>> KnownCaps = new(StringComparer.OrdinalIgnoreCase);
     static readonly Dictionary<string, string> excluded = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Visar skärmen (enligt appen) en annan dator? Sätts av fönstret när andra datorer används.</summary>
+    public static Func<string, bool>? ShowsOtherComputer;
     static readonly Dictionary<string, int> absentStreak = new(StringComparer.OrdinalIgnoreCase);
     static string? lastActiveKey;
     static bool layoutEnforced;
@@ -21,6 +23,16 @@ public static class Smart
     public static string? ExcludedReason(string dev)
     {
         lock (Gate) return excluded.GetValueOrDefault(dev);
+    }
+
+    /// <summary>Skärmen visar en annan dator – utöka inte dit automatiskt (null = får användas igen).</summary>
+    public static void SetExcluded(string dev, string? reason)
+    {
+        lock (Gate)
+        {
+            if (reason == null) excluded.Remove(dev); else excluded[dev] = reason;
+            absentStreak.Remove(dev);
+        }
     }
 
     static string Key(IEnumerable<DisplayTarget> ts) => string.Join("|", ts.Select(t => t.DevicePath).OrderBy(x => x));
@@ -106,7 +118,8 @@ public static class Smart
             if (absent.Count == active.Count) absent.Clear(); // stäng aldrig av allt
             foreach (var a in absent) excluded[a.DevicePath] = pres[a.DevicePath].Reason;
 
-            var candidates = ts.Where(t => !t.Active && !excluded.ContainsKey(t.DevicePath)).ToList();
+            var candidates = ts.Where(t => !t.Active && !excluded.ContainsKey(t.DevicePath)
+                && ShowsOtherComputer?.Invoke(t.DevicePath) != true).ToList();
             var desired = active.Except(absent).Concat(candidates).ToList();
             if (desired.Count == 0) return null;
 

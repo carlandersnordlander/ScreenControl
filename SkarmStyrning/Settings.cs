@@ -24,6 +24,7 @@ public sealed class AppSettings
     public bool ShareClipboard { get; set; } = true;
     /// <summary>Spela upp ljud från anslutna datorer i den här datorns högtalare.</summary>
     public bool ShareAudio { get; set; } = true;
+    public bool KeepAwake { get; set; }
     /// <summary>Volym (0–1) för ljudet från varje dator.</summary>
     public Dictionary<string, float> AudioVolumes { get; set; } = new();
     /// <summary>Skärm → "server" eller klient-id (saknas = automatiskt).</summary>
@@ -251,6 +252,12 @@ public static class Settings
     {
         get { lock (Gate) return S.ShareAudio; }
         set { lock (Gate) { S.ShareAudio = value; Save(); } }
+    }
+
+    public static bool KeepAwake
+    {
+        get { lock (Gate) return S.KeepAwake; }
+        set { lock (Gate) { S.KeepAwake = value; Save(); } }
     }
 
     public static float AudioVolume(string clientId)

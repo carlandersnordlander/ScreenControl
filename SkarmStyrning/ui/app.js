@@ -371,9 +371,27 @@ function renderInspector() {
     return;
   }
 
-  // Visning
+  // Visning – visar skärmen en annan dator styr knapparna den datorn, inte den här.
   const others = conn.filter(o => o.id !== m.id);
-  html += `
+  const ownerClient = m.owner?.kind === 'client' ? m.owner : null;
+  if (ownerClient) {
+    const cm = ownerClient.clientMode;
+    html += `
+    <div class="section">
+      <h4>Visning på ${esc(ownerClient.name)}</h4>
+      ${ownerClient.connected ? `
+      <div class="segmented">
+        <button data-cmode="extend" class="${cm === 'extend' ? 'active accent' : ''}">Utökad</button>
+        <button data-cmode="clone" class="${cm === 'clone' ? 'active accent' : ''}" ${ownerClient.clientScreens > 1 ? '' : 'disabled title="Datorn har bara en skärm"'}>Duplicera</button>
+      </div>
+      <div class="hint"><span>Gäller ${esc(ownerClient.name)}s skärmar – den här datorn påverkas inte.</span></div>`
+      : `<div class="hint"><span>${esc(ownerClient.name)} är inte ansluten – läget kan inte ändras härifrån.</span></div>`}
+      ${m.state === 'on'
+        ? `<div class="notice" style="margin-top:10px">${ICON.warn}<div>Den här datorn har kvar en osynlig yta på skärmen.
+            <div style="margin-top:8px"><button class="btn small primary" data-act="releaseHere">Släpp skärmen</button></div></div></div>`
+        : `<div class="notice info" style="margin-top:10px">${ICON.info}<div>Den här datorn använder inte skärmen. Byt ingång till den här datorn för att ta tillbaka den.</div></div>`}
+    </div>`;
+  } else html += `
     <div class="section">
       <h4>Visning</h4>
       <div class="segmented">
@@ -537,6 +555,11 @@ function detailsSection(m, inp) {
 $('#inspector').addEventListener('click', e => {
   const m = byId(selectedId);
   if (!m) return;
+  const cseg = e.target.closest('[data-cmode]');
+  if (cseg) {
+    if (!cseg.classList.contains('active')) call('setClientMode', { client: m.owner?.id, mode: cseg.dataset.cmode }).catch(() => {});
+    return;
+  }
   const seg = e.target.closest('.segmented button');
   if (seg) {
     const mode = seg.dataset.mode;
@@ -555,6 +578,7 @@ $('#inspector').addEventListener('click', e => {
   const act = e.target.closest('[data-act]')?.dataset.act;
   if (act === 'primary') saveLayout(true, m.id);
   if (act === 'only') call('only', { id: m.id }).catch(() => {});
+  if (act === 'releaseHere') applyMode(m.id, 'off');
   if (act === 'forget') { call('forget', { id: m.id }).catch(() => {}); selectedId = null; }
   if (act === 'autoMode') call('autoMode', { id: m.id }).catch(() => {});
   if (act === 'restoreMode' && m.modes?.preferred) {
@@ -1000,6 +1024,7 @@ function openSettings() {
       <h4>Andra datorer</h4>
       <div class="toggle-row"><div><strong>Dela mus och tangentbord</strong><span>Pekaren går över till skärmar som visar en annan dator</span></div><label class="switch"><input type="checkbox" id="sShare" ${s.shareInput ? 'checked' : ''}><i></i></label></div>
       <div class="toggle-row"><div><strong>Spela upp ljud från andra datorer</strong><span>Allt ljud från en ansluten dator hörs i den här datorns högtalare</span></div><label class="switch"><input type="checkbox" id="sAudio" ${s.shareAudio ? 'checked' : ''}><i></i></label></div>
+      <div class="toggle-row"><div><strong>Håll vaken</strong><span>Den här datorn och anslutna datorer går inte i viloläge (trycker en osynlig F15 när ingen använder dem)</span></div><label class="switch"><input type="checkbox" id="sAwake" ${s.keepAwake ? 'checked' : ''}><i></i></label></div>
       <div class="toggle-row"><div><strong>Dela urklipp</strong><span>Kopiera text på en dator och klistra in på den andra</span></div><label class="switch"><input type="checkbox" id="sClip" ${s.shareClipboard ? 'checked' : ''}><i></i></label></div>
       <div class="about"><ul>
         <li><b>Ctrl+Shift+Alt</b> + valfri tangent tar alltid tillbaka musen.</li>
@@ -1036,6 +1061,7 @@ function openSettings() {
       $('#sShare', root).onchange = e => call('setShareInput', { value: e.target.checked }).catch(() => {});
       $('#sClip', root).onchange = e => call('setShareClipboard', { value: e.target.checked }).catch(() => {});
       $('#sAudio', root).onchange = e => call('setShareAudio', { value: e.target.checked }).catch(() => {});
+      $('#sAwake', root).onchange = e => call('setKeepAwake', { value: e.target.checked }).catch(() => {});
       $('#sTheme', root).onclick = e => {
         const b = e.target.closest('button'); if (!b) return;
         for (const x of root.querySelectorAll('#sTheme button')) x.className = x === b ? 'active accent' : '';

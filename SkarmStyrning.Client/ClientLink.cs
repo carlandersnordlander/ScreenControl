@@ -155,6 +155,7 @@ sealed class ClientLink : IDisposable
                 channel?.Dispose();
                 channel = null;
                 shareClipboard = false;
+                KeepAwake.Enabled = false; // servern bestämmer – utan kontakt somnar datorn som vanligt
                 audio?.Stop();
                 AudioChanged?.Invoke();
                 if (controlled) { controlled = false; Injector.ReleaseAll(); }
@@ -255,6 +256,12 @@ sealed class ClientLink : IDisposable
                     AudioChanged?.Invoke();
                     break;
                 }
+                case MsgType.KeepAwake:
+                    KeepAwake.Enabled = p.Length > 0 && p[0] == 1;
+                    break;
+                case MsgType.DisplayMode:
+                    if (p.Length > 0) { byte mode = p[0]; _ = Task.Run(() => Topology.Apply(mode)); } // skärminfo skickas när Windows ändrat
+                    break;
                 case MsgType.AudioUseTcp:
                     audio?.UseTcp();
                     break;

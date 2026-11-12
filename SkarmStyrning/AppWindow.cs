@@ -117,6 +117,7 @@ public sealed partial class AppWindow : Form
             RegisterHotkeys();
             StartKvm();
             MigrateProfiles();
+            Net.KeepAwake.Enabled = Settings.KeepAwake;
         }
         try
         {
@@ -468,7 +469,8 @@ public sealed partial class AppWindow : Form
                     // Härifrån om det går, annars via datorn som skärmen visar just nu.
                     var err = SetInputRouted(dev, code).GetAwaiter().GetResult();
                     if (err != null) throw new InvalidOperationException($"{label}: {err}");
-                    return $"{label} visar nu {Ddc.InputName(code)}.";
+                    // Skärmen visar nu en annan dator → den här datorn släpper den (och tar tillbaka den när den byts hem).
+                    return $"{label} visar nu {Ddc.InputName(code)}." + FollowInput(dev, code);
                 });
                 return null;
             }
@@ -790,6 +792,7 @@ public sealed partial class AppWindow : Form
                 shareInput = Settings.ShareInput,
                 shareClipboard = Settings.ShareClipboard,
                 shareAudio = Settings.ShareAudio,
+                keepAwake = Settings.KeepAwake,
             },
             computers = ComputersState(),
             net = NetState(),
